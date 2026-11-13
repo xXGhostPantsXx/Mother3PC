@@ -116,6 +116,14 @@ Settings load(const std::string& dir) {
     s.widescreen = to_int(cfg, "m3_widescreen", 0, 0, 1) != 0;
     s.smooth = to_int(cfg, "m3_smooth_120", 0, 0, 2);
     s.hq_audio = to_int(cfg, "m3_hq_audio", 1, 0, 1) != 0;
+    s.show_launcher = to_int(cfg, "m3_show_launcher", 1, 0, 1) != 0;
+    s.mouse_controls = to_int(cfg, "m3_mouse_controls", 1, 0, 1) != 0;
+    s.mouse_cursor = to_int(cfg, "m3_mouse_cursor", 0, 0, 2);
+    s.mouse_rings = to_int(cfg, "m3_mouse_rings", 1, 0, 1) != 0;
+    s.live_title = to_int(cfg, "m3_live_title", 1, 0, 1) != 0;
+    s.camera_zoom = to_int(cfg, "m3_camera_zoom", 0, 0, 2);
+    s.skip_logos = to_int(cfg, "m3_skip_logos", 1, 0, 1) != 0;
+    s.black_bars = to_int(cfg, "m3_black_bars", 2, 0, 2);
     if (auto it = cfg.find("screen"); it != cfg.end())
         for (const char* name : kScreens)
             if (lower(it->second) == name) s.screen = name;
@@ -136,7 +144,15 @@ void save(const std::string& dir, const Settings& s) {
                    {"m3_button_prompts", std::to_string(s.prompt_style)},
                    {"m3_widescreen", s.widescreen ? "1" : "0"},
                    {"m3_smooth_120", std::to_string(s.smooth)},
-                   {"m3_hq_audio", s.hq_audio ? "1" : "0"}});
+                   {"m3_hq_audio", s.hq_audio ? "1" : "0"},
+                   {"m3_show_launcher", s.show_launcher ? "1" : "0"},
+                   {"m3_mouse_controls", s.mouse_controls ? "1" : "0"},
+                   {"m3_mouse_cursor", std::to_string(s.mouse_cursor)},
+                   {"m3_mouse_rings", s.mouse_rings ? "1" : "0"},
+                   {"m3_live_title", s.live_title ? "1" : "0"},
+                   {"m3_camera_zoom", std::to_string(s.camera_zoom)},
+                   {"m3_skip_logos", s.skip_logos ? "1" : "0"},
+                   {"m3_black_bars", std::to_string(s.black_bars)}});
     std::vector<std::pair<std::string, std::string>> keys;
     for (int i = 0; i < kButtonCount; ++i) keys.emplace_back(kButtonKeys[i], s.keys[i]);
     write_section(dir + "/keybinds.ini", "player1", keys);

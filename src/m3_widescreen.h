@@ -8,6 +8,9 @@
 namespace m3widescreen {
 
 void install();  // registers the PPU margin providers (harmless at 240px); tick() calls it
-void tick();     // game thread; re-validates the field a few times a second
+void tick();
+bool in_field();
+int black_bars_mode();
+void set_black_bars_mode(int mode);     // game thread; re-validates the field a few times a second
 
 }  // namespace m3widescreen

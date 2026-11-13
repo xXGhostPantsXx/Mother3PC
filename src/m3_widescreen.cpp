@@ -3,6 +3,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
@@ -53,6 +54,8 @@ Uint32 g_next = 0;
 int g_misses = 0;  // consecutive failed checks of the field still in use
 int g_margin_left = 0, g_margin_right = 0;  // margin widths of the widened view, set by tick()
 int g_margin_top = 0, g_margin_bottom = 0;   // rows above and below the native 160
+std::atomic_int g_black_bars_mode{2};
+extern "C" volatile int g_m3_battle_no_bars = 0;
 
 bool in_ewram(std::uint32_t a) { return a >= 0x02000000u && a < 0x02040000u; }
 
@@ -249,16 +252,25 @@ int void_width(int cx, int cy, int y, bool left) {
 // instead of looking shoved sideways; the black shrinks evenly as the camera moves on.
 // Rows above and below the native screen follow its first and last row.
 int black_width(int cx, int cy, int y) {
-    static int s_cx = -100000, s_cy = 0, s_map = -1;
+    const int mode = g_black_bars_mode.load(std::memory_order_relaxed);
+    if (mode <= 0) return 0;  // None: no artificial sidebars
+    static int s_cx = -100000, s_cy = 0, s_map = -1, s_mode = -1, s_ml = -1;
     static std::uint32_t s_layer = 0;
     static std::int8_t s_width[160];
     y = std::clamp(y, 0, 159);
-    if (cx != s_cx || cy != s_cy || g.map != s_map || g.layer[1] != s_layer) {
-        s_cx = cx, s_cy = cy, s_map = g.map, s_layer = g.layer[1];
+    if (cx != s_cx || cy != s_cy || g.map != s_map || g.layer[1] != s_layer || mode != s_mode || g_margin_left != s_ml) {
+        s_cx = cx, s_cy = cy, s_map = g.map, s_layer = g.layer[1], s_mode = mode, s_ml = g_margin_left;
         std::fill(std::begin(s_width), std::end(s_width), static_cast<std::int8_t>(-1));
     }
-    if (s_width[y] < 0)
-        s_width[y] = static_cast<std::int8_t>(std::max(void_width(cx, cy, y, true), void_width(cx, cy, y, false)));
+    if (s_width[y] < 0) {
+        int raw = std::max(void_width(cx, cy, y, true), void_width(cx, cy, y, false));
+        if (mode == 1) {
+            // Less: trim bars by 60% at 1.0x, and further when zoomed out
+            const int pct = (g_margin_top >= 40) ? 15 : ((g_margin_top >= 20) ? 25 : 40);
+            raw = (raw * pct) / 100;
+        }
+        s_width[y] = static_cast<std::int8_t>(raw);
+    }
     return s_width[y];
 }
 
@@ -495,10 +507,17 @@ bool battle_layout(const std::uint8_t* r) {
 }
 
 int provide_battle(const std::uint8_t* r, int bg, int y) {
+    const int mode = g_black_bars_mode.load(std::memory_order_relaxed);
+    g_m3_battle_no_bars = (mode == 0) ? 1 : 0;
     if (bg != 2 && bg != 3) return gba::kWsTilemapUnavailable;
     const int dispcnt = io16(r, 0);
-    if (dispcnt & 0x2000) {  // WIN0 spans the native width; extend it across the margins
-        const int v = io16(r, 0x44), top = v >> 8, bottom = v & 0xFF;
+    if (mode > 0 && (dispcnt & 0x2000)) {  // WIN0 spans the native width; extend it across the margins
+        const int v = io16(r, 0x44);
+        int top = v >> 8, bottom = v & 0xFF;
+        if (mode == 1 && top < bottom) {
+            top = (top * 40) / 100;
+            bottom = 160 - (((160 - bottom) * 40) / 100);
+        }
         const bool inside = top <= bottom ? (y >= top && y < bottom) : (y >= top || y < bottom);
         const int mask = inside ? io16(r, 0x48) : io16(r, 0x4A);
         if (!(mask & (1 << bg))) return gba::kWsTilemapUnavailable;
@@ -533,7 +552,7 @@ int provide_field(const std::uint8_t* r, const RowView& v, int bg, int hx, int y
         return gba::kWsTilemapKeepWrapped;
     if (!g.bg_ok[bg] || !in_room(v.room_cx[bg], v.room_cy[bg], hx, y)) return gba::kWsTilemapUnavailable;
     const int e = entry_at(g, bg - 1, (v.org_x[bg] + hx) >> 3, (v.org_y[bg] + y) >> 3);
-    if (e <= 0) return gba::kWsTilemapUnavailable;
+    if (e < 0) return gba::kWsTilemapUnavailable;
     *out = static_cast<std::uint16_t>(e);
     return gba::kWsTilemapReplace;
 }
@@ -543,6 +562,7 @@ int provide_field(const std::uint8_t* r, const RowView& v, int bg, int hx, int y
 // another 8px tile of the layer or another 16px room cell (in_room depends on
 // nothing else once the row is fixed), so both are kept.
 int provide(int bg, int hx, int y, std::uint16_t* out) {
+    g_m3_battle_no_bars = (g_battle && g_black_bars_mode.load(std::memory_order_relaxed) == 0) ? 1 : 0;
     if (g_battle) {
         const std::uint8_t* r = io();
         return r ? provide_battle(r, bg, y) : gba::kWsTilemapUnavailable;
@@ -643,7 +663,19 @@ void set_detached(Field& f) {
 }
 }  // namespace
 
+int black_bars_mode() { return g_black_bars_mode.load(std::memory_order_relaxed); }
+void set_black_bars_mode(int mode) {
+    const int m = std::clamp(mode, 0, 2);
+    g_black_bars_mode.store(m, std::memory_order_relaxed);
+    g_m3_battle_no_bars = (m == 0) ? 1 : 0;
+}
+
+bool in_field() {
+    return (g.ok && g_misses <= 4) || g_battle;
+}
+
 void tick() {
+    g_m3_battle_no_bars = (g_battle && g_black_bars_mode.load(std::memory_order_relaxed) == 0) ? 1 : 0;
     // Only for a widened view; at 240px the PPU path stays untouched. run_game()
     // clears every widescreen hook at startup, so (re)install from here.
     gba::GbaPpu* ppu = gbarecomp::active_ppu();
@@ -711,9 +743,14 @@ void tick() {
     f.ok = ok;
     if (!ok) f.width = f.height = 0;
     g_battle = !ok && battle_layout(r);
-    if (ok != g.ok || f.map != g.map || f.width != g.width)
-        SDL_Log("m3-widescreen: map %d field=%d sane=%d width=%d layer0=%s%dx%d", f.map, ok, sane, f.width,
-                f.detached ? "detached " : "", f.lw, f.lh);
+    if (ok != g.ok || f.map != g.map || f.width != g.width) {
+        int dbg_cx = 0, dbg_cy = 0;
+        camera(r, 2, &dbg_cx, &dbg_cy);
+        std::fprintf(stderr, "m3-widescreen: map=%d ok=%d sane=%d width=%d height=%d cells=%d cx=%d cy=%d bg_ok=[%d,%d,%d,%d]\n",
+                     f.map, ok, sane, f.width, f.height, cells, dbg_cx, dbg_cy,
+                     f.bg_ok[0], f.bg_ok[1], f.bg_ok[2], f.bg_ok[3]);
+        std::fflush(stderr);
+    }
     g = f;
     ++g_field_gen;
     gba::g_ws_pillarbox = ok || g_battle ? 0 : 1;

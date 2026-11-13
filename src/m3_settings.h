@@ -23,6 +23,14 @@ struct Settings {
     int prompt_style = 0;        // in-game buttons: 0 auto, 1 Xbox, 2 PlayStation, 3 Nintendo, 4 keyboard
     int smooth = 0;              // smooth motion: 0 off, 1 on 100 Hz+ displays, 2 always
     bool hq_audio = true;        // built-in HQ audio mixer on supported ROMs (changes RNG and RAM layout)
+    bool show_launcher = true;   // show the MOTHER 3 launcher window at startup
+    bool mouse_controls = true;  // EarthBound-style mouse controls
+    int mouse_cursor = 0;        // 0 Feather, 1 Dot, 2 Default
+    bool mouse_rings = true;     // directional tether and rings when dragging
+    bool live_title = true;      // show live chapter & room location in window title
+    int camera_zoom = 0;         // 0 = 1.0x Normal, 1 = 1.25x Medium, 2 = 1.5x Wide
+    bool skip_logos = true;      // auto-skip boot logo splash screens to title
+    int black_bars = 2;          // 0 = None, 1 = Less, 2 = Default
     std::array<std::string, kButtonCount> keys;  // SDL scancode names
 };
 

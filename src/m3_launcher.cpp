@@ -1,6 +1,8 @@
 #include "m3_launcher.h"
 
 #include "m3_mods.h"
+#include "m3_discord_auth.h"
+#include "m3_updater.h"
 #include "m3_setup.h"
 
 #include <SDL.h>
@@ -250,9 +252,9 @@ struct Pads {
 #endif
 };
 
-enum class Page { Main, Settings, Controls, Mods };
-const char* const kItems[] = {"Play", "Settings", "Controls", "Mods", "Quit"};
-constexpr int kItemCount = 5;
+enum class Page { Main, Settings, Controls, Mods, Account, Updates };
+const char* const kItems[] = {"Play", "Settings", "Controls", "Mods", "Account", "Quit"};
+constexpr int kItemCount = 6;
 constexpr int kSettingRows = 12;  // 10 options + Import a save + Change game files
 constexpr int kControlRows = m3settings::kButtonCount + 1;  // buttons + Reset
 
@@ -296,13 +298,14 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
 
     // Windows are rebuilt whenever the flavor changes.
     int built_flavor = -1;
-    m3assets::Image command_bar, status_box, note, page_win;
+    m3assets::Image command_bar, status_box, note, page_win, upd_box;
     auto build_windows = [&] {
         const int pal = st.flavor * 6;
         command_bar = rom.window(kW / 8, 3, pal);
         status_box = rom.window(kW / 8 / kPartySize, 3, pal);  // same height as the command bar
         note = rom.window(24, 5, pal);
         page_win = rom.window(38, 19, pal);
+        upd_box = rom.window(28, 7, pal);
         built_flavor = st.flavor;
     };
 
@@ -313,6 +316,7 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
     const int shot_frame = std::getenv("M3_LAUNCHER_SHOT_FRAME") ? std::atoi(std::getenv("M3_LAUNCHER_SHOT_FRAME")) : 150;
     Page page = Page::Main;
     int cursor_at = 0;
+    bool hover_updates = false;
     if (const char* p = std::getenv("M3_LAUNCHER_PAGE")) {
         page = static_cast<Page>(std::clamp(std::atoi(p), 0, 3));
         cursor_at = static_cast<int>(page);
@@ -320,9 +324,9 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
 
     Ui ui{rom, {}};
     std::vector<int> item_x;
-    for (int i = 0, x = 26; i < kItemCount; ++i) {  // same column as the page text below
+    for (int i = 0, x = 14; i < kItemCount; ++i) {  // same column as the page text below
         item_x.push_back(x);
-        x += ui.width(kItems[i]) + 22;
+        x += ui.width(kItems[i]) + 14;
     }
 
     Walker walker;
@@ -334,7 +338,14 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
     Result result = Result::Quit;
 
     std::vector<m3mods::Mod> mods;
-    int mods_scroll = 0;
+    int mods_scroll = 0; m3discord::Config discord_cfg = m3discord::load_config(dir); m3discord::Session discord_session = m3discord::load_session(dir);
+    m3updater::Config upd_cfg = m3updater::load_config(dir);
+    m3updater::State upd_state;
+    upd_state.patch_notes = m3updater::load_local_notes(dir);
+    bool update_prompt = false;
+    int prompt_row = 0;
+    if (!upd_cfg.manifest_url.empty()) m3updater::begin_check(dir);
+    int notes_scroll = 0;
     auto open_mods = [&] {
         mods = m3mods::list(dir);
         m3mods::classify(dir, rom.bytes(), mods);
@@ -352,6 +363,12 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
         cursor_at = static_cast<int>(p);
         row = 0;
         if (p == Page::Mods) open_mods();
+        if (p == Page::Updates) notes_scroll = 0;
+    };
+    auto try_play = [&] {
+        if (discord_cfg.require_playtester && !discord_session.is_playtester) { open_page(Page::Account); return; }
+        if (upd_state.update_available && !update_prompt) { update_prompt = true; prompt_row = 0; return; }
+        result = Result::Play; running = false;
     };
     // Bottom-of-page help in the labels of whatever the player last pressed.
     auto hint = [&](const char* confirm) {
@@ -386,6 +403,220 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
             if (e.type == SDL_CONTROLLERDEVICEADDED) { SDL_GameControllerOpen(e.cdevice.which); pads.refresh(); }
             if (e.type == SDL_CONTROLLERDEVICEREMOVED) pads.refresh();
 
+            if (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEWHEEL) {
+                float lx = -1.0f, ly = -1.0f;
+                int mx = 0, my = 0;
+                SDL_GetMouseState(&mx, &my);
+                SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
+                const int ix = static_cast<int>(lx);
+                const int iy = static_cast<int>(ly);
+
+                if (capturing) {
+                    if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
+                        capturing = false;
+                    }
+                    continue;
+                }
+
+                constexpr int mPx = 8, mPy = 26, mLabelX = mPx + 18, mRight = mPx + 38 * 8 - 14;
+
+                // Top command bar hover & click (works from Main or any sub-page)
+                int hit_tab = -1;
+                if (iy >= 0 && iy < 24) {
+                    for (int i = 0; i < kItemCount; ++i) {
+                        const int x0 = item_x[i] - 10;
+                        const int x1 = item_x[i] + ui.width(kItems[i]) + 6;
+                        if (ix >= x0 && ix <= x1) { hit_tab = i; break; }
+                    }
+                }
+                if (hit_tab != -1) {
+                    hover_updates = false;
+                    using_pad = false;
+                    if (page == Page::Main) cursor_at = hit_tab;
+                    if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                        if (page != Page::Main && hit_tab != static_cast<int>(page)) leave_page();
+                        if (hit_tab == 0) {
+                            try_play();
+                        } else if (hit_tab == kItemCount - 1) {
+                            running = false;
+                        } else if (page == Page::Main || hit_tab != static_cast<int>(page)) {
+                            open_page(static_cast<Page>(hit_tab));
+                        }
+                        continue;
+                    }
+                }
+
+                // Update Available modal popup mouse handling
+                if (update_prompt && page == Page::Main) {
+                    const int ux = (kW - upd_box.w) / 2, uy = (kH - upd_box.h) / 2;
+                    for (int i = 0; i < 2; ++i) {
+                        const int ry = uy + 24 + i * 12;
+                        if (ix >= ux + 8 && ix <= ux + upd_box.w - 8 && iy >= ry - 2 && iy < ry + 10) {
+                            prompt_row = i;
+                            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                                using_pad = false;
+                                update_prompt = false;
+                                if (prompt_row == 0) {
+                                    open_page(Page::Updates);
+                                    if (!upd_state.downloading) m3updater::begin_download_and_apply(dir);
+                                } else {
+                                    result = Result::Play; running = false;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) update_prompt = false;
+                    continue;
+                }
+
+                // Bottom bar hover & click on Page::Main (Updates button)
+                if (page == Page::Main) {
+                    const std::string upd_lbl = upd_state.update_available ? "Update!" : "Updates";
+                    const bool over_upd = (iy >= kH - command_bar.h && iy < kH && ix >= 4 && ix <= 18 + ui.width(upd_lbl));
+                    if (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN) {
+                        hover_updates = over_upd;
+                        if (over_upd) using_pad = false;
+                    }
+                    if (over_upd && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                        hover_updates = false;
+                        open_page(Page::Updates);
+                        continue;
+                    }
+                }
+
+                // Mouse wheel scrolling on Mods or Updates page
+                if (e.type == SDL_MOUSEWHEEL && page == Page::Updates) {
+                    const int max_scroll = std::max(0, static_cast<int>(upd_state.patch_notes.size()) - 6);
+                    if (e.wheel.y > 0) notes_scroll = std::max(0, notes_scroll - 1);
+                    else if (e.wheel.y < 0) notes_scroll = std::min(max_scroll, notes_scroll + 1);
+                    continue;
+                }
+                if (e.type == SDL_MOUSEWHEEL && page == Page::Mods) {
+                    const int rows = static_cast<int>(mods.size()) + 1;
+                    if (e.wheel.y > 0) row = std::max(0, row - 1);
+                    else if (e.wheel.y < 0) row = std::min(rows - 1, row + 1);
+                    continue;
+                }
+
+                // Sub-page hover & click interactions
+                if (page != Page::Main && ix >= mLabelX - 12 && ix <= mRight + 4) {
+                    if (page == Page::Settings) {
+                        for (int i = 0; i < kSettingRows; ++i) {
+                            const int y0 = mPy + 5 + i * 10;
+                            if (iy >= y0 && iy < y0 + 10) {
+                                row = i;
+                                if (e.type == SDL_MOUSEBUTTONDOWN) {
+                                    using_pad = false;
+                                    if (e.button.button == SDL_BUTTON_LEFT) {
+                                        if (row == kSettingRows - 1) {
+                                            leave_page();
+                                            result = Result::ChangeFiles;
+                                            running = false;
+                                        } else if (row == kSettingRows - 2) {
+                                            m3setup::import_save(dir);
+                                        } else {
+                                            change_setting(1);
+                                        }
+                                    } else if (e.button.button == SDL_BUTTON_RIGHT && row < kSettingRows - 2) {
+                                        change_setting(-1);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    } else if (page == Page::Controls) {
+                        for (int i = 0; i < kControlRows; ++i) {
+                            const int y0 = mPy + 15 + i * 10;
+                            if (iy >= y0 && iy < y0 + 10) {
+                                row = i;
+                                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                                    using_pad = false;
+                                    if (row == kControlRows - 1) {
+                                        st.keys = m3settings::defaults().keys;
+                                        pads.reset();
+                                    } else {
+                                        capturing = true;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    } else if (page == Page::Mods) {
+                        constexpr int kVisible = 7;
+                        const int count = static_cast<int>(mods.size());
+                        for (int v = 0; v < std::min(kVisible, count); ++v) {
+                            const int idx = mods_scroll + v;
+                            if (idx >= count) break;
+                            const int y0 = mPy + 9 + v * 13;
+                            if (iy >= y0 && iy < y0 + 13) {
+                                row = idx;
+                                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && mods[row].valid) {
+                                    using_pad = false;
+                                    mods[row].enabled = !mods[row].enabled;
+                                }
+                                break;
+                            }
+                        }
+                        const int y_open = mPy + 10 + kVisible * 13 + 3;
+                        if (iy >= y_open && iy < y_open + 13) {
+                            row = count;
+                            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                                using_pad = false;
+                                const std::string url = "file:///" + m3mods::folder(dir);
+                                SDL_OpenURL(url.c_str());
+                            }
+                        }
+                    } else if (page == Page::Updates) {
+                        for (int i = 0; i < 2; ++i) {
+                            const int y0 = mPy + 35 + i * 12;
+                            if (iy >= y0 && iy < y0 + 12) {
+                                row = i;
+                                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                                    using_pad = false;
+                                    if (row == 0) {
+                                        upd_cfg = m3updater::load_config(dir);
+                                        m3updater::begin_check(dir);
+                                    } else if (row == 1 && upd_state.update_available && !upd_state.downloading) {
+                                        m3updater::begin_download_and_apply(dir);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    } else if (page == Page::Account) {
+                        for (int i = 0; i < 3; ++i) {
+                            const int y0 = mPy + 71 + i * 13;
+                            if (iy >= y0 && iy < y0 + 13) {
+                                row = i;
+                                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                                    using_pad = false;
+                                    if (row == 0) {
+                                        discord_cfg = m3discord::load_config(dir);
+                                        m3discord::begin_login(dir);
+                                    } else if (row == 1) {
+                                        discord_cfg = m3discord::load_config(dir);
+                                        m3discord::begin_refresh(dir);
+                                    } else if (row == 2) {
+                                        m3discord::cancel_login();
+                                        m3discord::clear_session(dir);
+                                        discord_session = m3discord::Session{};
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Right-click outside interactive rows on any sub-page goes Back
+                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT && page != Page::Main) {
+                    if (page == Page::Account) m3discord::cancel_login();
+                    leave_page();
+                }
+                continue;
+            }
+
             if (capturing) {  // a key rebinds the keyboard, a button the controller; Escape cancels
                 const int b = row;
                 if (e.type == SDL_KEYDOWN && !e.key.repeat) {
@@ -410,8 +641,8 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
             using_pad = e.type != SDL_KEYDOWN;
 
             if (in == Input::PrevPage || in == Input::NextPage) {  // cycle Settings, Controls, Mods
-                const int at = page == Page::Main ? (in == Input::NextPage ? 0 : 4) : static_cast<int>(page);
-                const int next = (at - 1 + (in == Input::NextPage ? 1 : 2)) % 3 + 1;
+                const int at = page == Page::Main ? (in == Input::NextPage ? 0 : 5) : static_cast<int>(page);
+                const int next = (at - 1 + (in == Input::NextPage ? 1 : 3)) % 4 + 1;
                 if (page != Page::Main) leave_page();
                 open_page(static_cast<Page>(next));
                 continue;
@@ -419,11 +650,25 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
 
             switch (page) {
                 case Page::Main:
+                    if (update_prompt) {
+                        if (in == Input::Up || in == Input::Down) prompt_row = 1 - prompt_row;
+                        if (in == Input::Back) update_prompt = false;
+                        if (in == Input::Confirm) {
+                            update_prompt = false;
+                            if (prompt_row == 0) {
+                                open_page(Page::Updates);
+                                if (!upd_state.downloading) m3updater::begin_download_and_apply(dir);
+                            } else {
+                                result = Result::Play; running = false;
+                            }
+                        }
+                        break;
+                    }
                     if (in == Input::Left || in == Input::Up) cursor_at = (cursor_at + kItemCount - 1) % kItemCount;
                     if (in == Input::Right || in == Input::Down) cursor_at = (cursor_at + 1) % kItemCount;
                     if (in == Input::Back) cursor_at = kItemCount - 1;
                     if (in == Input::Confirm) {
-                        if (cursor_at == 0) { result = Result::Play; running = false; }
+                        if (cursor_at == 0) try_play();
                         else if (cursor_at == kItemCount - 1) running = false;
                         else open_page(static_cast<Page>(cursor_at));
                     }
@@ -463,9 +708,54 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
                     }
                     break;
                 }
+                case Page::Account: {
+                    constexpr int kAccRows = 3;
+                    if (in == Input::Up) row = (row + kAccRows - 1) % kAccRows;
+                    if (in == Input::Down) row = (row + 1) % kAccRows;
+                    if (in == Input::Back) {
+                        m3discord::cancel_login();
+                        leave_page();
+                    } else if (in == Input::Confirm) {
+                        if (row == 0) {
+                            discord_cfg = m3discord::load_config(dir);
+                            m3discord::begin_login(dir);
+                        } else if (row == 1) {
+                            discord_cfg = m3discord::load_config(dir);
+                            m3discord::begin_refresh(dir);
+                        } else if (row == 2) {
+                            m3discord::cancel_login();
+                            m3discord::clear_session(dir);
+                            discord_session = m3discord::Session{};
+                        }
+                    }
+                    break;
+                }
+                case Page::Updates: {
+                    const int max_scroll = std::max(0, static_cast<int>(upd_state.patch_notes.size()) - 6);
+                    if (in == Input::Up) {
+                        if (row > 0) --row;
+                        else notes_scroll = std::max(0, notes_scroll - 1);
+                    }
+                    if (in == Input::Down) {
+                        if (row < 1) ++row;
+                        else notes_scroll = std::min(max_scroll, notes_scroll + 1);
+                    }
+                    if (in == Input::Back) leave_page();
+                    else if (in == Input::Confirm) {
+                        if (row == 0) {
+                            upd_cfg = m3updater::load_config(dir);
+                            m3updater::begin_check(dir);
+                        } else if (row == 1 && upd_state.update_available && !upd_state.downloading) {
+                            m3updater::begin_download_and_apply(dir);
+                        }
+                    }
+                    break;
+                }
             }
         }
-        if (built_flavor != st.flavor) build_windows();
+        m3discord::poll(dir, discord_session);
+        m3updater::poll(upd_state);
+        if (upd_state.ready_to_restart) { m3updater::launch_restart_script(dir); running = false; } if (built_flavor != st.flavor) build_windows();
 
         // The party walks 60 steps a second whatever the display's refresh rate:
         // vsync alone ran it 4x fast on a 240 Hz screen. A stall skips ahead at most 4.
@@ -510,16 +800,31 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
 
         cv.draw(command_bar, 0, 0);
         for (int i = 0; i < kItemCount; ++i) {
-            if (i == cursor_at && page == Page::Main) ui.cursor(item_x[i] - 10, 11);
+            if (i == cursor_at && page == Page::Main && !hover_updates) ui.cursor(item_x[i] - 10, 11);
             ui.text(kItems[i], item_x[i], 7, i == cursor_at ? kInk : (page == Page::Main ? kInk : kDim));
         }
 
         constexpr int kPx = 8, kPy = 26, kLabelX = kPx + 18, kRight = kPx + 38 * 8 - 14, kHintY = kPy + 136;
         if (page == Page::Main) {
-            for (int k = 0; k < kPartySize; ++k) {
-                const int x = k * status_box.w, y = kH - status_box.h;
-                cv.draw(status_box, x, y);
-                ui.text(kParty[k].name, x + (status_box.w - ui.width(kParty[k].name)) / 2, y + 7);
+            const int by = kH - command_bar.h;
+            cv.draw(command_bar, 0, by);
+            const std::string upd_lbl = upd_state.update_available ? "Update!" : "Updates";
+            if (hover_updates) ui.cursor(6, by + 11);
+            ui.text(upd_lbl, 16, by + 7, upd_state.update_available ? kHot : kInk);
+            const int ver_x = 16 + ui.width(upd_lbl) + 8;
+            const std::string ver_str = std::string("v") + m3updater::kLauncherVersion + " (" + upd_cfg.build_version + ")";
+            ui.text(ver_str, ver_x, by + 7, kDim);
+            if (update_prompt) {
+                const int ux = (kW - upd_box.w) / 2, uy = (kH - upd_box.h) / 2;
+                cv.draw(upd_box, ux, uy);
+                const std::string title = "Update available (v" + upd_state.latest_version + ")!";
+                ui.text(title, ux + 12, uy + 8, kHot);
+                const char* opts[2] = {"Update now", "Play without updating"};
+                for (int i = 0; i < 2; ++i) {
+                    const int ry = uy + 24 + i * 12;
+                    if (i == prompt_row) ui.cursor(ux + 12, ry + 4);
+                    ui.text((i == 0 ? "Update now" : "Play without updating"), ux + 22, ry, i == prompt_row ? kHot : kInk);
+                }
             }
         } else if (page == Page::Settings) {
             cv.draw(page_win, kPx, kPy);
@@ -564,6 +869,65 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
             // The runtime reads the left stick directly, so it isn't a bind.
             ui.text_right("Left stick always moves", kRight, kPy + 16 + (kControlRows - 1) * 10, kDim);
             ui.text(capturing ? std::string("Escape cancels") : hint("Rebind"), kLabelX, kHintY, kDim);
+        } else if (page == Page::Updates) {
+            cv.draw(page_win, kPx, kPy);
+            ui.text("Launcher & Build Updates", kLabelX, kPy + 6, kHot);
+            ui.text("Launcher: v" + std::string(m3updater::kLauncherVersion) + "   Build: " + upd_cfg.build_version,
+                    kLabelX, kPy + 18, kInk);
+
+            const char* act0 = upd_state.checking ? "Checking..." : "Check for updates";
+            const std::string act1_str = upd_state.downloading ? "Downloading update..."
+                : (upd_state.update_available ? ("Install update (v" + upd_state.latest_version + ")")
+                                              : "Install update (none available)");
+            if (row == 0) ui.cursor(kLabelX - 10, kPy + 39);
+            ui.text(act0, kLabelX, kPy + 35, row == 0 ? kHot : kInk);
+            if (row == 1) ui.cursor(kLabelX - 10, kPy + 51);
+            ui.text(act1_str, kLabelX, kPy + 47,
+                    row == 1 ? kHot : (upd_state.update_available ? kInk : kDim));
+
+            ui.text("Patch Notes:", kLabelX, kPy + 62, kDim);
+            constexpr int kNoteLines = 6;
+            const int total_notes = static_cast<int>(upd_state.patch_notes.size());
+            for (int i = 0; i < kNoteLines; ++i) {
+                const int idx = notes_scroll + i;
+                if (idx >= total_notes) break;
+                ui.text(upd_state.patch_notes[idx], kLabelX, kPy + 73 + i * 9, kInk);
+            }
+
+            std::string st_msg = upd_state.status;
+            while (ui.width(st_msg) > 265 && st_msg.size() > 4) st_msg.pop_back();
+            ui.text(st_msg, kLabelX, kHintY - 11, kDim);
+            ui.text(hint("Select"), kLabelX, kHintY, kDim);
+        } else if (page == Page::Account) {
+            cv.draw(page_win, kPx, kPy);
+            ui.text("Discord Account & Playtest Access", kLabelX, kPy + 8, kHot);
+            const std::string acct = discord_session.signed_in
+                ? (discord_session.global_name + " (@" + discord_session.username + ")")
+                : "Not linked";
+            const std::string server_str = !discord_session.signed_in ? "-"
+                : (discord_session.in_guild ? "Joined" : "Not in server");
+            const std::string role_str = !discord_session.signed_in ? "Unverified"
+                : (discord_session.is_playtester ? "Verified Playtester" : "Standard Member");
+            ui.text("Account:", kLabelX, kPy + 24, kDim);
+            ui.text(acct, kLabelX + 64, kPy + 24, discord_session.signed_in ? kInk : kDim);
+            ui.text("Server:", kLabelX, kPy + 36, kDim);
+            ui.text(server_str, kLabelX + 64, kPy + 36, discord_session.in_guild ? kInk : kDim);
+            ui.text("Status:", kLabelX, kPy + 48, kDim);
+            ui.text(role_str, kLabelX + 64, kPy + 48, discord_session.is_playtester ? kHot : kInk);
+            std::vector<const char*> actions = {
+                discord_session.signed_in ? "Re-link Discord account" : "Sign in with Discord",
+                "Refresh playtester role",
+                "Sign out / Unlink account"
+            };
+            for (int i = 0; i < 3; ++i) {
+                const int y = kPy + 72 + i * 13;
+                if (i == row) ui.cursor(kLabelX - 10, y + 4);
+                ui.text(actions.at(i), kLabelX, y, i == row ? kHot : kInk);
+            }
+            std::string st_msg = m3discord::status_text();
+            while (ui.width(st_msg) > 265 && st_msg.size() > 4) st_msg.pop_back();
+            ui.text(st_msg, kLabelX, kHintY - 14, kDim);
+            ui.text(hint("Select"), kLabelX, kHintY, kDim);
         } else {  // Mods
             cv.draw(page_win, kPx, kPy);
             constexpr int kVisible = 7;

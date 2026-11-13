@@ -52,6 +52,10 @@ set(MOTHER3_SOURCES
     src/m3_bezel.cpp
     src/m3_mods.cpp
     src/m3_widescreen.cpp
+    src/m3_mouse.cpp
+    src/m3_presence.cpp
+    src/m3_discord_auth.cpp
+    src/m3_updater.cpp
     ${GAME_GENERATED_SOURCES})
 if(ANDROID)
     # android/ builds this through gbarecomp's Android shell, which loads libmain.so.
@@ -111,7 +115,10 @@ if(APPLE)
         gbarecomp_gba
         gbarecomp_armv4t)
 else()
-    target_link_libraries(${MOTHER3_TARGET} PRIVATE
+    if(WIN32)
+    target_link_libraries(${MOTHER3_TARGET} PRIVATE winhttp ws2_32 bcrypt)
+endif()
+target_link_libraries(${MOTHER3_TARGET} PRIVATE
         "-Wl,--start-group"
         gbarecomp_runtime
         gbarecomp_debug
