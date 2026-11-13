@@ -1,3 +1,3 @@
-latest_version=2.0.0
+latest_version=2.0.1
 download_url=https://github.com
 notes=v2.0.0 - Current Release|- Added Discord OAuth2 Playtester Auth|- Added full Mouse support in Launcher|- Added HQ Audio Mixer & Widescreen|- Added Smooth Frame Rate & Mods menu
