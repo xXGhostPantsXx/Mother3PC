@@ -11,7 +11,7 @@ if [ ! -x "$tool" ]; then
 fi
 want_en="306fb8874533b0fd0796208faa8bed2db4ae77fb"
 want_hq="4ffe71ce5c5e1e8d9be5fbd09968b60787169b21"
-got=$(sha1sum "$rom" | cut -d' ' -f1 | tr '[:upper:]' '[:lower:]')
+got=$(sha1sum "$rom" | cut -d' ' -f1 | tr '[:upper:]' '[:lower:]' | tr -d '\\')
 if [ "$got" != "$want_en" ] && [ "$got" != "$want_hq" ]; then
   echo "ROM SHA-1 mismatch: $got (want $want_en or $want_hq)"
   exit 1
