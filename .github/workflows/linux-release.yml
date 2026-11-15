@@ -15,6 +15,8 @@ jobs:
           sudo apt-get install -y build-essential cmake ninja-build libsdl2-dev libgl-dev pkg-config python3 patchelf
 
       - name: Build Mother3Recomp (Linux x86_64)
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 1
         run: |
           sed -i 's/\r$//' tools/*.sh
           bash tools/build_linux.sh
