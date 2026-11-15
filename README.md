@@ -5,6 +5,8 @@ AI was used to assist in the coding within gbarecomp and recomp-ui.
 
 YOU HAVE to provide your own gba.bin and rom! (seems like the best way to do it is to get a Japenese rom and manually translate it)
 
+If you download the APK, it says that the BIOS (gba.bin) file is optional. IT IS NOT! You still have to get that file! I will go in and fix that later.
+
 ## Download
 
 | Platform | Version | Download |
