@@ -271,7 +271,7 @@ if(BUILD_TESTING AND GBAGAME_RECOMP_UI AND NOT ANDROID)
     set_tests_properties(host_menu_test PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
 endif()
 
-if(WIN32 AND BUILD_TESTING)
+if(WIN32 AND BUILD_TESTING AND TARGET SDL2::SDL2)
     add_executable(sdl_hook_test tests/sdl_hook_test.c)
     target_link_libraries(sdl_hook_test PRIVATE SDL2::SDL2)
     target_compile_options(sdl_hook_test PRIVATE -UNDEBUG)
