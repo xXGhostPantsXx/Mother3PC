@@ -9,7 +9,7 @@ YOU HAVE to provide your own gba.bin and rom! (seems like the best way to do it 
 
 | Platform | Version | Download |
 | --- | --- | --- |
-| Windows x64 | 2.0.0 | [Windows ZIP]([https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-windows-x64.zip]https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Windows-x64.zip) |
+| Windows x64 | 2.0.0 | [Windows ZIP](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-windows-x64.zip]https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Windows-x64.zip) |
 | Linux x86_64 / Steam Deck | 2.0.0 | [Linux archive](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Linux-x86_64.zip) |
 | Android (ARM64 and x86_64) | 2.0.0 | [Android APK](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk]https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Android.apk) |
 | MacOS | 2.0.0 | [Mac file](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-macOS.zip) |
