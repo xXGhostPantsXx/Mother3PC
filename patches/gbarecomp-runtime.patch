@@ -1,3 +1,16 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2ef9047..cf0eca1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -123,7 +123,7 @@ option(GBA_COSIM
+     OFF)
+ 
+ if(NOT EMSCRIPTEN)
+-if(ANDROID AND TARGET SDL2::SDL2)
++if((ANDROID OR APPLE) AND TARGET SDL2::SDL2)
+     # Android applications provide SDL from the parent Gradle/CMake project.
+     # Reusing that target keeps SDLActivity's libSDL2.so as the single backend.
+     set(GBARECOMP_SDL2_OK TRUE)
 diff --git a/platform/android/gbarecomp-app.gradle b/platform/android/gbarecomp-app.gradle
 index 0201eeb..2133a50 100644
 --- a/platform/android/gbarecomp-app.gradle
@@ -810,7 +823,7 @@ index 53ba221..73449b9 100644
          return static_cast<uint16_t>(host_keyinput_ & synth_keyinput_ & 0x03FFu);
      }
 diff --git a/src/gba/gba_ppu.cpp b/src/gba/gba_ppu.cpp
-index 0454527..731b0d4 100644
+index 0454527..3c59f5a 100644
 --- a/src/gba/gba_ppu.cpp
 +++ b/src/gba/gba_ppu.cpp
 @@ -33,6 +33,8 @@ extern "C" int g_ws_affine_filter_enabled = 0;
@@ -822,13 +835,14 @@ index 0454527..731b0d4 100644
  
  // Widescreen pillarbox (Step C policy): when nonzero, the wide path renders the
  // margin columns (outside the central 240) as solid black instead of extended
-@@ -57,9 +59,23 @@ extern "C" int (*g_ws_obj_attr_y_provider)(int, std::uint16_t,
+@@ -57,9 +59,24 @@ extern "C" int (*g_ws_obj_attr_y_provider)(int, std::uint16_t,
                                              std::uint16_t, std::uint16_t,
                                              int*) = nullptr;
  extern "C" const WsMarginObjPixel* (*g_ws_obj_margin_provider)(int, int*, int*) = nullptr;
 +extern "C" int g_ppu_record_motion = 0;
++extern "C" volatile int g_m3_battle_no_bars;
 +extern "C" int (*g_present_interpolator)(const GbaPpu*, const uint8_t*, uint32_t, uint32_t,
-+                                         uint8_t*) = nullptr;
++                                         uint8_t*, float) = nullptr;
  
  namespace {
  
@@ -846,7 +860,7 @@ index 0454527..731b0d4 100644
  // These pointers have no C linkage and are deliberately not declared by the
  // public PPU header. Only the engine-internal seam below can publish them.
  const std::uint16_t* g_foreign_background = nullptr;
-@@ -109,10 +125,10 @@ void GbaPpu::serialize(gbarecomp::debug::SnapshotWriter& w) const {
+@@ -109,10 +126,10 @@ void GbaPpu::serialize(gbarecomp::debug::SnapshotWriter& w) const {
          std::array<uint8_t, kFramebufferBytes> center{};
          constexpr std::size_t kNativeStride = kScreenWidth * 3u;
          const std::size_t wide_stride = render_width() * 3u;
@@ -859,7 +873,7 @@ index 0454527..731b0d4 100644
                          kNativeStride);
          }
          w.bytes(center.data(), center.size());
-@@ -153,9 +169,9 @@ void GbaPpu::deserialize(gbarecomp::debug::SnapshotReader& r) {
+@@ -153,9 +170,9 @@ void GbaPpu::deserialize(gbarecomp::debug::SnapshotReader& r) {
          // show the restored image instead of stale pre-load pixels.
          constexpr std::size_t kNativeStride = kScreenWidth * 3u;
          const std::size_t wide_stride = render_width() * 3u;
@@ -871,7 +885,7 @@ index 0454527..731b0d4 100644
                          native_latch.data() + y * kNativeStride,
                          kNativeStride);
          }
-@@ -186,6 +202,16 @@ void GbaPpu::reset() {
+@@ -186,6 +203,16 @@ void GbaPpu::reset() {
      std::memset(work_fb_.data(), 0xFF, work_fb_.size());
  }
  
@@ -888,7 +902,7 @@ index 0454527..731b0d4 100644
  void GbaPpu::set_view_margins(uint32_t left, uint32_t right,
                                uint32_t top, uint32_t bottom) {
      // Geometry alone cannot authorize vertical content. The compositor also
-@@ -687,6 +713,7 @@ void render_scanline_internal(uint8_t* rgb,
+@@ -687,6 +714,7 @@ void render_scanline_internal(uint8_t* rgb,
      uint8_t* row = rgb + y * kScreenWidth * 3;
      if (dispcnt & 0x0080u) {
          std::memset(row, 0xFF, kScreenWidth * 3);
@@ -896,7 +910,40 @@ index 0454527..731b0d4 100644
          return;
      }
  
-@@ -1317,6 +1344,7 @@ void render_scanline_internal(uint8_t* rgb,
+@@ -745,7 +773,12 @@ void render_scanline_internal(uint8_t* rgb,
+         if (win1_row && win_h_in(0x42, x)) return (winin >> 8) & 0x3Fu;
+         if (obj_window_mask && obj_window_mask[x])
+             return static_cast<uint16_t>((winout >> 8) & 0x3Fu);
+-        return static_cast<uint16_t>(winout & 0x3Fu);
++        uint16_t out_mask = static_cast<uint16_t>(winout & 0x3Fu);
++        if (g_m3_battle_no_bars && win0_en && !win1_en && !objwin_en &&
++            io[0x41] == 0u && io[0x40] == 240u) {
++            out_mask |= static_cast<uint16_t>(winin & 0x0Cu);
++        }
++        return out_mask;
+     };
+ #if defined(GBARECOMP_SCANLINE_HLE)
+     // The caller gives an immutable row snapshot. Resolve windows once, not
+@@ -812,6 +845,9 @@ void render_scanline_internal(uint8_t* rgb,
+                       uint8_t layer,
+                       bool target1,
+                       bool target2) {
++        if (g_m3_battle_no_bars && layer == 1u && (color & 0x7FFFu) == 0u) {
++            if (y >= 52 || x < 7u || x >= 233u) return;
++        }
+         PixelCandidate cand;
+         cand.color = color;
+ #if !defined(GBARECOMP_SCANLINE_HLE)
+@@ -912,7 +948,7 @@ void render_scanline_internal(uint8_t* rgb,
+ 
+             uint16_t entry = load_u16_le(&vram[map_off]);
+             uint32_t tile_num = entry & 0x03FFu;
+-            bool hflip = (entry & 0x0400u) != 0;
++            bool hflip = ((entry & 0x0400u) != 0) ^ mirror_h;
+             bool vflip = (entry & 0x0800u) != 0;
+             uint32_t palette_bank = (entry >> 12) & 0x0Fu;
+             uint32_t px = tex_x & 7u;
+@@ -1317,6 +1353,7 @@ void render_scanline_internal(uint8_t* rgb,
      if (bldy > 16u) bldy = 16u;
      for (uint32_t x = 0; x < kScreenWidth; ++x) {
          uint8_t* dst = row + x * 3;
@@ -904,7 +951,7 @@ index 0454527..731b0d4 100644
          // Alpha blend top (1st target) with the layer below (2nd target). Per
          // GBATEK this occurs when effect==1 OR top is a semi-transparent OBJ
          // (mode 1 forces alpha regardless of BLDCNT). NOT gated on EVA!=0:
-@@ -1376,9 +1404,9 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
+@@ -1376,9 +1413,9 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
      const bool native_row = y >= 0 && y < static_cast<int>(kVanH);
      uint8_t* row = rgb + (y + static_cast<int>(oy)) * out_w * 3;
      if (!native_row && (!g_ws_authored_margin_layers || !g_ws_tilemap_provider || g_ws_pillarbox)) {
@@ -916,7 +963,69 @@ index 0454527..731b0d4 100644
  
      struct PixelCandidate {
  #if !defined(GBARECOMP_SCANLINE_HLE)
-@@ -2075,6 +2103,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
+@@ -1428,15 +1465,25 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
+         if (obj_window_mask && hx >= 0 && hx < static_cast<int>(kVanW) &&
+             obj_window_mask[hx])
+             return static_cast<uint16_t>((winout >> 8) & 0x3Fu);
+-        return static_cast<uint16_t>(winout & 0x3Fu);
++        uint16_t out_mask = static_cast<uint16_t>(winout & 0x3Fu);
++        if (g_m3_battle_no_bars && win0_en && !win1_en && !objwin_en &&
++            *(io + 0x41) == 0u && *(io + 0x40) == 240u) {
++            out_mask |= static_cast<uint16_t>(winin & 0x0Cu);
++        }
++        return out_mask;
+     };
+     auto window_control_at_xy = [&](int hx, int sy) -> uint16_t {
+         if (sy == y) return window_control_at_hx(hx);
+         if (!any_window) return 0x3Fu;
+         if (win0_en && win_v_row(0x44, sy) && win_h_in(0x40, hx)) return winin & 0x3Fu;
+         if (win1_en && win_v_row(0x46, sy) && win_h_in(0x42, hx)) return (winin >> 8) & 0x3Fu;
+-        // Do not invent an OBJ-window stencil for a different scanline.
+-        return objwin_en ? 0u : static_cast<uint16_t>(winout & 0x3Fu);
++        if (objwin_en) return 0u;
++        uint16_t out_mask = static_cast<uint16_t>(winout & 0x3Fu);
++        if (g_m3_battle_no_bars && win0_en && !win1_en &&
++            *(io + 0x41) == 0u && *(io + 0x40) == 240u) {
++            out_mask |= static_cast<uint16_t>(winin & 0x0Cu);
++        }
++        return out_mask;
+     };
+     // A guest-authored window has no defined continuation beyond the native
+     // 240-pixel scanline. Extend it into the margins only when every authentic
+@@ -1513,6 +1560,10 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
+     }
+     auto submit = [&](uint32_t x, uint16_t color, int key, uint8_t layer,
+                       bool target1, bool target2) {
++        if (g_m3_battle_no_bars && layer == 1u && (color & 0x7FFFu) == 0u) {
++            const int hx_sub = static_cast<int>(x) - static_cast<int>(ox);
++            if (y >= 52 || hx_sub < 7 || hx_sub >= 233) return;
++        }
+         if (hd) hd->submit(x, color, key, layer, target1, target2);
+         PixelCandidate cand;
+         cand.color = color;
+@@ -1592,7 +1643,11 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
+             uint32_t tex_x = static_cast<uint32_t>(
+                                  sample_hx + static_cast<int>(hofs)) &
+                              (width_px - 1u);
+-            uint32_t tex_y = (sample_y + vofs) & (height_px - 1u);
++            uint32_t tex_y = static_cast<uint32_t>(
++                                 sample_y + static_cast<int>(vofs)) &
++                             (height_px - 1u);
++            bool mirror_h = false;
++            (void)mirror_h;
+             uint32_t tile_x = tex_x >> 3;
+             uint32_t tile_y = tex_y >> 3;
+             uint32_t block = (tile_x >> 5) + (tile_y >> 5) * block_cols;
+@@ -1619,7 +1674,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
+                 }
+             }
+             uint32_t tile_num = entry & 0x03FFu;
+-            bool hflip = (entry & 0x0400u) != 0;
++            bool hflip = ((entry & 0x0400u) != 0) ^ mirror_h;
+             bool vflip = (entry & 0x0800u) != 0;
+             uint32_t palette_bank = (entry >> 12) & 0x0Fu;
+             uint32_t px = tex_x & 7u;
+@@ -2075,6 +2130,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
              g_ws_ui_pixel_provider(static_cast<int>(x) - static_cast<int>(ox), y, &ui_color))
              submit(x, ui_color & 0x7FFFu, -1, 0, false, false);
          uint8_t* dst = row + x * 3;
@@ -924,7 +1033,7 @@ index 0454527..731b0d4 100644
          // OBJ-only presentations (notably the real GBA BIOS logo) author the
          // whole backdrop through palette entry 0. There is no regular-BG
          // alias to protect in the margins, so preserve that authentic color
-@@ -2142,8 +2171,9 @@ void GbaPpu::render(uint8_t* rgb,
+@@ -2142,8 +2198,9 @@ void GbaPpu::render(uint8_t* rgb,
          return;
      }
      const uint32_t ow = render_width();
@@ -936,7 +1045,7 @@ index 0454527..731b0d4 100644
      }
  }
  
-@@ -2446,18 +2476,39 @@ void GbaPpu::render_scanline(uint32_t y,
+@@ -2446,18 +2503,39 @@ void GbaPpu::render_scanline(uint32_t y,
      }
  
      if (!rasterization_enabled_) return;
@@ -977,7 +1086,7 @@ index 0454527..731b0d4 100644
          if (hd_line) {
              // The expanded compositor may apply optional presentation filters.
              // Keep its native scratch entirely separate from canonical pixels.
-@@ -2466,21 +2517,28 @@ void GbaPpu::render_scanline(uint32_t y,
+@@ -2466,21 +2544,95 @@ void GbaPpu::render_scanline(uint32_t y,
          } else if (hd) hd->upscale_line(y, work_fb_.data() + y * render_width() * 3);
          return;
      }
@@ -986,39 +1095,107 @@ index 0454527..731b0d4 100644
 -    if (y == 0 && (extra_top_ || extra_bottom_)) {
 -        for (int sy = -static_cast<int>(extra_top_); sy < static_cast<int>(kScreenHeight + extra_bottom_); ++sy) {
 -            if (sy >= 0 && sy < static_cast<int>(kScreenHeight)) continue;
+-            render_scanline_wide(work_fb_.data(), sy, dispcnt, io, vram, oam, pal,
+-                                 render_width(), extra_left_, extra_top_);
+-            if (hd) hd->upscale_line(unsigned(sy + int(extra_top_)),
+-                work_fb_.data() + size_t(sy + int(extra_top_)) * render_width() * 3);
 +    // Host-authored extra rows use the published state of the native edge row
 +    // they continue: rows above at scanline zero, rows below after the last
 +    // scanline, so per-line scroll effects carry on past both edges. They never
 +    // run emulated scanline timing or affine updates.
++    static std::array<std::array<uint8_t, 8>, 160> s_battle_scroll{};
++    if (y < 160) {
++        std::memcpy(s_battle_scroll.at(y).data(), affine_io.data() + 0x18, 8);
++    }
 +    auto render_extra_rows = [&](int from, int to) {
++        const uint32_t rw = render_width();
++        std::array<uint8_t, 0x60> row_io = affine_io;
 +        for (int sy = from; sy < to; ++sy) {
-             render_scanline_wide(work_fb_.data(), sy, dispcnt, io, vram, oam, pal,
--                                 render_width(), extra_left_, extra_top_);
--            if (hd) hd->upscale_line(unsigned(sy + int(extra_top_)),
--                work_fb_.data() + size_t(sy + int(extra_top_)) * render_width() * 3);
-+                                 render_width(), ox, oy);
++            const uint8_t* use_io = io;
++            if (g_m3_battle_no_bars) {
++                int my = (sy < 0) ? 0 : 159;
++                if (my < 0) my = 0;
++                if (my > 159) my = 159;
++                std::memcpy(row_io.data() + 0x18, s_battle_scroll.at(my).data(), 8);
++                use_io = row_io.data();
++            }
++            render_scanline_wide(work_fb_.data(), sy, dispcnt, use_io, vram, oam, pal,
++                                 rw, ox, oy);
 +            if (hd) hd->upscale_line(unsigned(sy + int(oy)),
-+                work_fb_.data() + size_t(sy + int(oy)) * render_width() * 3);
-         }
--    }
++                work_fb_.data() + size_t(sy + int(oy)) * rw * 3);
++        }
 +    };
-+    if (y == 0 && oy) render_extra_rows(-static_cast<int>(oy), 0);
++    if (y == 0 && oy && !g_m3_battle_no_bars) render_extra_rows(-static_cast<int>(oy), 0);
 +    if (record)
 +        g_tag_row = work_tags_.data() + static_cast<std::size_t>(y + oy) * render_width();
-     render_scanline_wide(work_fb_.data(), y, dispcnt, affine_io.data(),
--                         vram, oam, pal, render_width(), extra_left_, extra_top_, hd_line ? hd : nullptr);
--    if (hd && !hd_line) hd->upscale_line(y + extra_top_,
--        work_fb_.data() + size_t(y + extra_top_) * render_width() * 3);
++    std::array<uint8_t, 0x60> battle_io = affine_io;
++    const uint8_t* active_line_io = affine_io.data();
++    if (g_m3_battle_no_bars) {
++        std::memcpy(battle_io.data() + 0x18, io + 0x18, 8);
++        active_line_io = battle_io.data();
++    }
++    render_scanline_wide(work_fb_.data(), y, dispcnt, active_line_io,
 +                         vram, oam, pal, render_width(), ox, oy, hd_line ? hd : nullptr);
 +    g_tag_row = nullptr;
 +    if (hd && !hd_line) hd->upscale_line(y + oy,
 +        work_fb_.data() + size_t(y + oy) * render_width() * 3);
-+    if (y == kScreenHeight - 1 && render_height() > kScreenHeight + oy)
-+        render_extra_rows(static_cast<int>(kScreenHeight), static_cast<int>(render_height() - oy));
++    if (y == kScreenHeight - 1 && g_m3_battle_no_bars) {
++        render(work_fb_.data(), dispcnt, io, vram, oam, pal);
++        const uint32_t rw = render_width();
++        const uint32_t rh = render_height();
++        if (oy + kScreenHeight + 2 < rh && ox + kScreenWidth <= rw) {
++            const uint8_t* r159 = work_fb_.data() + size_t(oy + kScreenHeight - 1) * rw * 3;
++            uint8_t* r160 = work_fb_.data() + size_t(oy + kScreenHeight) * rw * 3;
++            uint8_t* r161 = work_fb_.data() + size_t(oy + kScreenHeight + 1) * rw * 3;
++            uint8_t* r162 = work_fb_.data() + size_t(oy + kScreenHeight + 2) * rw * 3;
++            int run_start = -1;
++            for (int hx = 0; hx <= static_cast<int>(kScreenWidth); ++hx) {
++                bool is_card_px = false;
++                if (hx < static_cast<int>(kScreenWidth)) {
++                    const uint8_t* p = r159 + size_t(int(ox) + hx) * 3;
++                    const uint8_t* bg = r160 + size_t(int(ox) + hx) * 3;
++                    const bool is_black = (*(p + 0) == 0 && *(p + 1) == 0 && *(p + 2) == 0);
++                    const int dr = std::abs(int(*(p + 0)) - int(*(bg + 0)));
++                    const int dg = std::abs(int(*(p + 1)) - int(*(bg + 1)));
++                    const int db = std::abs(int(*(p + 2)) - int(*(bg + 2)));
++                    is_card_px = is_black || (dr + dg + db > 24);
++                }
++                if (is_card_px) {
++                    if (run_start < 0) run_start = hx;
++                } else if (run_start >= 0) {
++                    if (hx - run_start >= 40) {
++                        for (int cx = run_start; cx < hx; ++cx) {
++                            uint8_t* d0 = r160 + size_t(int(ox) + cx) * 3;
++                            uint8_t* d1 = r161 + size_t(int(ox) + cx) * 3;
++                            const uint8_t* s = r159 + size_t(int(ox) + cx) * 3;
++                            if (cx == run_start || cx == hx - 1) {
++                                *(d0 + 0) = *(d0 + 1) = *(d0 + 2) = 0;
++                                *(d1 + 0) = *(d1 + 1) = *(d1 + 2) = 0;
++                            } else {
++                                *(d0 + 0) = *(s + 0); *(d0 + 1) = *(s + 1); *(d0 + 2) = *(s + 2);
++                                *(d1 + 0) = *(d1 + 1) = *(d1 + 2) = 0;
++                            }
++                        }
++                    }
++                    run_start = -1;
++                }
++            }
+         }
++        return;
++    }
++    if (y == kScreenHeight - 1) {
++        if (oy && g_m3_battle_no_bars) render_extra_rows(-static_cast<int>(oy), 0);
++        if (render_height() > kScreenHeight + oy)
++            render_extra_rows(static_cast<int>(kScreenHeight), static_cast<int>(render_height() - oy));
+     }
+-    render_scanline_wide(work_fb_.data(), y, dispcnt, affine_io.data(),
+-                         vram, oam, pal, render_width(), extra_left_, extra_top_, hd_line ? hd : nullptr);
+-    if (hd && !hd_line) hd->upscale_line(y + extra_top_,
+-        work_fb_.data() + size_t(y + extra_top_) * render_width() * 3);
  }
  
  void GbaPpu::note_affine_reference_write(unsigned bg, bool y_axis) {
-@@ -2510,6 +2568,12 @@ void GbaPpu::latch_framebuffer(uint16_t dispcnt,
+@@ -2510,6 +2662,12 @@ void GbaPpu::latch_framebuffer(uint16_t dispcnt,
  void GbaPpu::mark_framebuffer_latched() {
      if (rasterization_enabled_)
          std::memcpy(latched_fb_.data(), work_fb_.data(), render_bytes());
@@ -1032,7 +1209,7 @@ index 0454527..731b0d4 100644
      if (high_resolution_) high_resolution_->latch();
      if (presentation_) presentation_->frame_ready();
 diff --git a/src/gba/gba_ppu.h b/src/gba/gba_ppu.h
-index 3563e70..984bcc5 100644
+index 3563e70..9f981d6 100644
 --- a/src/gba/gba_ppu.h
 +++ b/src/gba/gba_ppu.h
 @@ -166,6 +166,10 @@ public:
@@ -1091,24 +1268,622 @@ index 3563e70..984bcc5 100644
  extern "C" int g_ws_pillarbox;  // Step C policy: black margins on non-field screens
  extern "C" int g_ws_pillarbox_left;
  extern "C" int g_ws_pillarbox_right;
-@@ -317,6 +345,15 @@ extern "C" int (*g_ws_obj_attr_y_provider)(int oam_index,
+@@ -317,6 +345,16 @@ extern "C" int (*g_ws_obj_attr_y_provider)(int oam_index,
  // keeps the established expanded-viewport OBJ test.
  extern "C" int g_ws_obj_native_clip;
  
 +// Present-time frame interpolation (host-only, default off). While
 +// g_ppu_record_motion is nonzero the PPU keeps the motion record above. A
-+// runtime with g_present_interpolator set calls it with each finished frame
-+// before presenting; returning nonzero means out2x now holds a (2w x 2h RGB888)
-+// frame for half a frame period earlier, which is presented first.
++// runtime with g_present_interpolator set calls it once per display refresh
++// with the newest finished frame and how far (0 <= t < 1) the moment shown
++// lies from the previous frame to it; returning nonzero means out2x now holds
++// that moment as a (2w x 2h RGB888) frame. Zero means no smooth motion now.
 +extern "C" int g_ppu_record_motion;
 +extern "C" int (*g_present_interpolator)(const GbaPpu* ppu, const uint8_t* rgb,
-+                                         uint32_t w, uint32_t h, uint8_t* out2x);
++                                         uint32_t w, uint32_t h, uint8_t* out2x, float t);
 +
  // Read-only, game-authored OBJ coverage for expanded margins. RGB555 bit 15
  // marks a transparent pixel. Priority uses the hardware 0..3 BG/OBJ order.
  // The PPU never consumes this layer inside the native 240x160 viewport.
+diff --git a/src/runtime/generated_bios/bios_dispatch_table.cpp b/src/runtime/generated_bios/bios_dispatch_table.cpp
+index 8c9cb06..89f5ac3 100644
+--- a/src/runtime/generated_bios/bios_dispatch_table.cpp
++++ b/src/runtime/generated_bios/bios_dispatch_table.cpp
+@@ -115,15 +115,13 @@ extern "C" const DispatchEntry kBiosDispatchTable[] = {
+     {0x000001A0u, 0u, 0u, swi_branch_table_02},
+     {0x000001A4u, 0u, 1u, swi_branch_table_02},
+     {0x000001A8u, 0u, 0u, swi_branch_table_03},
+-    {0x000001ACu, 0u, 0u, swi_branch_table_39},
++    {0x000001A8u, 0u, 1u, swi_branch_table_02},
++    {0x000001ACu, 0u, 1u, swi_branch_table_02},
+     {0x000001ACu, 0u, 1u, swi_branch_table_03},
+-    {0x000001B0u, 0u, 0u, afunc_000001B0},
++    {0x000001B0u, 0u, 1u, swi_branch_table_02},
+     {0x000001B0u, 0u, 1u, swi_branch_table_03},
+-    {0x000001B0u, 0u, 1u, swi_branch_table_39},
+-    {0x000001B4u, 0u, 0u, afunc_000001B4},
++    {0x000001B4u, 0u, 1u, swi_branch_table_02},
+     {0x000001B4u, 0u, 1u, swi_branch_table_03},
+-    {0x000001B4u, 0u, 1u, swi_branch_table_39},
+-    {0x000001B4u, 0u, 1u, afunc_000001B0},
+     {0x00000284u, 1u, 0u, _00000284},
+     {0x00000286u, 1u, 1u, _00000284},
+     {0x00000288u, 1u, 1u, _00000284},
+@@ -1283,534 +1281,38 @@ extern "C" const DispatchEntry kBiosDispatchTable[] = {
+     {0x000011E4u, 0u, 1u, afunc_000011B0},
+     {0x000011E8u, 0u, 1u, afunc_000011B0},
+     {0x000011ECu, 0u, 1u, afunc_000011B0},
+-    {0x000011F0u, 0u, 0u, afunc_000011F0},
+-    {0x000011F4u, 0u, 0u, afunc_000011F4},
+-    {0x000011F4u, 0u, 1u, afunc_000011F0},
+-    {0x000011F8u, 0u, 0u, afunc_000011F8},
+-    {0x000011F8u, 0u, 1u, afunc_000011F0},
+-    {0x000011F8u, 0u, 1u, afunc_000011F4},
+-    {0x000011FCu, 0u, 0u, afunc_000011FC},
+-    {0x000011FCu, 0u, 1u, afunc_000011F0},
+-    {0x000011FCu, 0u, 1u, afunc_000011F4},
+-    {0x000011FCu, 0u, 1u, afunc_000011F8},
+-    {0x00001200u, 0u, 0u, afunc_00001200},
+-    {0x00001200u, 0u, 1u, afunc_000011F0},
+-    {0x00001200u, 0u, 1u, afunc_000011F4},
+-    {0x00001200u, 0u, 1u, afunc_000011F8},
+-    {0x00001200u, 0u, 1u, afunc_000011FC},
+-    {0x00001204u, 0u, 0u, afunc_00001204},
+-    {0x00001204u, 0u, 1u, afunc_000011F0},
+-    {0x00001204u, 0u, 1u, afunc_000011F4},
+-    {0x00001204u, 0u, 1u, afunc_000011F8},
+-    {0x00001204u, 0u, 1u, afunc_000011FC},
+-    {0x00001204u, 0u, 1u, afunc_00001200},
+-    {0x00001208u, 0u, 0u, afunc_00001208},
+-    {0x00001208u, 0u, 1u, afunc_000011F0},
+-    {0x00001208u, 0u, 1u, afunc_000011F4},
+-    {0x00001208u, 0u, 1u, afunc_000011F8},
+-    {0x00001208u, 0u, 1u, afunc_000011FC},
+-    {0x00001208u, 0u, 1u, afunc_00001200},
+-    {0x00001208u, 0u, 1u, afunc_00001204},
+-    {0x0000120Cu, 0u, 0u, afunc_0000120C},
+-    {0x0000120Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000120Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000120Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000120Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000120Cu, 0u, 1u, afunc_00001200},
+-    {0x0000120Cu, 0u, 1u, afunc_00001204},
+-    {0x0000120Cu, 0u, 1u, afunc_00001208},
+-    {0x00001210u, 0u, 0u, afunc_00001210},
+-    {0x00001210u, 0u, 1u, afunc_000011F0},
+-    {0x00001210u, 0u, 1u, afunc_000011F4},
+-    {0x00001210u, 0u, 1u, afunc_000011F8},
+-    {0x00001210u, 0u, 1u, afunc_000011FC},
+-    {0x00001210u, 0u, 1u, afunc_00001200},
+-    {0x00001210u, 0u, 1u, afunc_00001204},
+-    {0x00001210u, 0u, 1u, afunc_00001208},
+-    {0x00001210u, 0u, 1u, afunc_0000120C},
+-    {0x00001214u, 0u, 0u, afunc_00001214},
+-    {0x00001214u, 0u, 1u, afunc_000011F0},
+-    {0x00001214u, 0u, 1u, afunc_000011F4},
+-    {0x00001214u, 0u, 1u, afunc_000011F8},
+-    {0x00001214u, 0u, 1u, afunc_000011FC},
+-    {0x00001214u, 0u, 1u, afunc_00001200},
+-    {0x00001214u, 0u, 1u, afunc_00001204},
+-    {0x00001214u, 0u, 1u, afunc_00001208},
+-    {0x00001214u, 0u, 1u, afunc_0000120C},
+-    {0x00001214u, 0u, 1u, afunc_00001210},
+-    {0x00001218u, 0u, 0u, afunc_00001218},
+-    {0x00001218u, 0u, 1u, afunc_000011F0},
+-    {0x00001218u, 0u, 1u, afunc_000011F4},
+-    {0x00001218u, 0u, 1u, afunc_000011F8},
+-    {0x00001218u, 0u, 1u, afunc_000011FC},
+-    {0x00001218u, 0u, 1u, afunc_00001200},
+-    {0x00001218u, 0u, 1u, afunc_00001204},
+-    {0x00001218u, 0u, 1u, afunc_00001208},
+-    {0x00001218u, 0u, 1u, afunc_0000120C},
+-    {0x00001218u, 0u, 1u, afunc_00001210},
+-    {0x00001218u, 0u, 1u, afunc_00001214},
+-    {0x0000121Cu, 0u, 0u, afunc_0000121C},
+-    {0x0000121Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000121Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000121Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000121Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000121Cu, 0u, 1u, afunc_00001200},
+-    {0x0000121Cu, 0u, 1u, afunc_00001204},
+-    {0x0000121Cu, 0u, 1u, afunc_00001208},
+-    {0x0000121Cu, 0u, 1u, afunc_0000120C},
+-    {0x0000121Cu, 0u, 1u, afunc_00001210},
+-    {0x0000121Cu, 0u, 1u, afunc_00001214},
+-    {0x0000121Cu, 0u, 1u, afunc_00001218},
+-    {0x00001220u, 0u, 0u, afunc_00001220},
+-    {0x00001220u, 0u, 1u, afunc_000011F0},
+-    {0x00001220u, 0u, 1u, afunc_000011F4},
+-    {0x00001220u, 0u, 1u, afunc_000011F8},
+-    {0x00001220u, 0u, 1u, afunc_000011FC},
+-    {0x00001220u, 0u, 1u, afunc_00001200},
+-    {0x00001220u, 0u, 1u, afunc_00001204},
+-    {0x00001220u, 0u, 1u, afunc_00001208},
+-    {0x00001220u, 0u, 1u, afunc_0000120C},
+-    {0x00001220u, 0u, 1u, afunc_00001210},
+-    {0x00001220u, 0u, 1u, afunc_00001214},
+-    {0x00001220u, 0u, 1u, afunc_00001218},
+-    {0x00001220u, 0u, 1u, afunc_0000121C},
+-    {0x00001224u, 0u, 0u, afunc_00001224},
+-    {0x00001224u, 0u, 1u, afunc_000011F0},
+-    {0x00001224u, 0u, 1u, afunc_000011F4},
+-    {0x00001224u, 0u, 1u, afunc_000011F8},
+-    {0x00001224u, 0u, 1u, afunc_000011FC},
+-    {0x00001224u, 0u, 1u, afunc_00001200},
+-    {0x00001224u, 0u, 1u, afunc_00001204},
+-    {0x00001224u, 0u, 1u, afunc_00001208},
+-    {0x00001224u, 0u, 1u, afunc_0000120C},
+-    {0x00001224u, 0u, 1u, afunc_00001210},
+-    {0x00001224u, 0u, 1u, afunc_00001214},
+-    {0x00001224u, 0u, 1u, afunc_00001218},
+-    {0x00001224u, 0u, 1u, afunc_0000121C},
+-    {0x00001224u, 0u, 1u, afunc_00001220},
+-    {0x00001228u, 0u, 0u, afunc_00001228},
+-    {0x00001228u, 0u, 1u, afunc_000011F0},
+-    {0x00001228u, 0u, 1u, afunc_000011F4},
+-    {0x00001228u, 0u, 1u, afunc_000011F8},
+-    {0x00001228u, 0u, 1u, afunc_000011FC},
+-    {0x00001228u, 0u, 1u, afunc_00001200},
+-    {0x00001228u, 0u, 1u, afunc_00001204},
+-    {0x00001228u, 0u, 1u, afunc_00001208},
+-    {0x00001228u, 0u, 1u, afunc_0000120C},
+-    {0x00001228u, 0u, 1u, afunc_00001210},
+-    {0x00001228u, 0u, 1u, afunc_00001214},
+-    {0x00001228u, 0u, 1u, afunc_00001218},
+-    {0x00001228u, 0u, 1u, afunc_0000121C},
+-    {0x00001228u, 0u, 1u, afunc_00001220},
+-    {0x00001228u, 0u, 1u, afunc_00001224},
+-    {0x0000122Cu, 0u, 0u, afunc_0000122C},
+-    {0x0000122Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000122Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000122Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000122Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000122Cu, 0u, 1u, afunc_00001200},
+-    {0x0000122Cu, 0u, 1u, afunc_00001204},
+-    {0x0000122Cu, 0u, 1u, afunc_00001208},
+-    {0x0000122Cu, 0u, 1u, afunc_0000120C},
+-    {0x0000122Cu, 0u, 1u, afunc_00001210},
+-    {0x0000122Cu, 0u, 1u, afunc_00001214},
+-    {0x0000122Cu, 0u, 1u, afunc_00001218},
+-    {0x0000122Cu, 0u, 1u, afunc_0000121C},
+-    {0x0000122Cu, 0u, 1u, afunc_00001220},
+-    {0x0000122Cu, 0u, 1u, afunc_00001224},
+-    {0x0000122Cu, 0u, 1u, afunc_00001228},
+-    {0x00001230u, 0u, 0u, afunc_00001230},
+-    {0x00001230u, 0u, 1u, afunc_000011F0},
+-    {0x00001230u, 0u, 1u, afunc_000011F4},
+-    {0x00001230u, 0u, 1u, afunc_000011F8},
+-    {0x00001230u, 0u, 1u, afunc_000011FC},
+-    {0x00001230u, 0u, 1u, afunc_00001200},
+-    {0x00001230u, 0u, 1u, afunc_00001204},
+-    {0x00001230u, 0u, 1u, afunc_00001208},
+-    {0x00001230u, 0u, 1u, afunc_0000120C},
+-    {0x00001230u, 0u, 1u, afunc_00001210},
+-    {0x00001230u, 0u, 1u, afunc_00001214},
+-    {0x00001230u, 0u, 1u, afunc_00001218},
+-    {0x00001230u, 0u, 1u, afunc_0000121C},
+-    {0x00001230u, 0u, 1u, afunc_00001220},
+-    {0x00001230u, 0u, 1u, afunc_00001224},
+-    {0x00001230u, 0u, 1u, afunc_00001228},
+-    {0x00001230u, 0u, 1u, afunc_0000122C},
+-    {0x00001234u, 0u, 0u, afunc_00001234},
+-    {0x00001234u, 0u, 1u, afunc_000011F0},
+-    {0x00001234u, 0u, 1u, afunc_000011F4},
+-    {0x00001234u, 0u, 1u, afunc_000011F8},
+-    {0x00001234u, 0u, 1u, afunc_000011FC},
+-    {0x00001234u, 0u, 1u, afunc_00001200},
+-    {0x00001234u, 0u, 1u, afunc_00001204},
+-    {0x00001234u, 0u, 1u, afunc_00001208},
+-    {0x00001234u, 0u, 1u, afunc_0000120C},
+-    {0x00001234u, 0u, 1u, afunc_00001210},
+-    {0x00001234u, 0u, 1u, afunc_00001214},
+-    {0x00001234u, 0u, 1u, afunc_00001218},
+-    {0x00001234u, 0u, 1u, afunc_0000121C},
+-    {0x00001234u, 0u, 1u, afunc_00001220},
+-    {0x00001234u, 0u, 1u, afunc_00001224},
+-    {0x00001234u, 0u, 1u, afunc_00001228},
+-    {0x00001234u, 0u, 1u, afunc_0000122C},
+-    {0x00001234u, 0u, 1u, afunc_00001230},
+-    {0x00001238u, 0u, 0u, afunc_00001238},
+-    {0x00001238u, 0u, 1u, afunc_000011F0},
+-    {0x00001238u, 0u, 1u, afunc_000011F4},
+-    {0x00001238u, 0u, 1u, afunc_000011F8},
+-    {0x00001238u, 0u, 1u, afunc_000011FC},
+-    {0x00001238u, 0u, 1u, afunc_00001200},
+-    {0x00001238u, 0u, 1u, afunc_00001204},
+-    {0x00001238u, 0u, 1u, afunc_00001208},
+-    {0x00001238u, 0u, 1u, afunc_0000120C},
+-    {0x00001238u, 0u, 1u, afunc_00001210},
+-    {0x00001238u, 0u, 1u, afunc_00001214},
+-    {0x00001238u, 0u, 1u, afunc_00001218},
+-    {0x00001238u, 0u, 1u, afunc_0000121C},
+-    {0x00001238u, 0u, 1u, afunc_00001220},
+-    {0x00001238u, 0u, 1u, afunc_00001224},
+-    {0x00001238u, 0u, 1u, afunc_00001228},
+-    {0x00001238u, 0u, 1u, afunc_0000122C},
+-    {0x00001238u, 0u, 1u, afunc_00001230},
+-    {0x00001238u, 0u, 1u, afunc_00001234},
+-    {0x0000123Cu, 0u, 0u, afunc_0000123C},
+-    {0x0000123Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000123Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000123Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000123Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000123Cu, 0u, 1u, afunc_00001200},
+-    {0x0000123Cu, 0u, 1u, afunc_00001204},
+-    {0x0000123Cu, 0u, 1u, afunc_00001208},
+-    {0x0000123Cu, 0u, 1u, afunc_0000120C},
+-    {0x0000123Cu, 0u, 1u, afunc_00001210},
+-    {0x0000123Cu, 0u, 1u, afunc_00001214},
+-    {0x0000123Cu, 0u, 1u, afunc_00001218},
+-    {0x0000123Cu, 0u, 1u, afunc_0000121C},
+-    {0x0000123Cu, 0u, 1u, afunc_00001220},
+-    {0x0000123Cu, 0u, 1u, afunc_00001224},
+-    {0x0000123Cu, 0u, 1u, afunc_00001228},
+-    {0x0000123Cu, 0u, 1u, afunc_0000122C},
+-    {0x0000123Cu, 0u, 1u, afunc_00001230},
+-    {0x0000123Cu, 0u, 1u, afunc_00001234},
+-    {0x0000123Cu, 0u, 1u, afunc_00001238},
+-    {0x00001240u, 0u, 0u, afunc_00001240},
+-    {0x00001240u, 0u, 1u, afunc_000011F0},
+-    {0x00001240u, 0u, 1u, afunc_000011F4},
+-    {0x00001240u, 0u, 1u, afunc_000011F8},
+-    {0x00001240u, 0u, 1u, afunc_000011FC},
+-    {0x00001240u, 0u, 1u, afunc_00001200},
+-    {0x00001240u, 0u, 1u, afunc_00001204},
+-    {0x00001240u, 0u, 1u, afunc_00001208},
+-    {0x00001240u, 0u, 1u, afunc_0000120C},
+-    {0x00001240u, 0u, 1u, afunc_00001210},
+-    {0x00001240u, 0u, 1u, afunc_00001214},
+-    {0x00001240u, 0u, 1u, afunc_00001218},
+-    {0x00001240u, 0u, 1u, afunc_0000121C},
+-    {0x00001240u, 0u, 1u, afunc_00001220},
+-    {0x00001240u, 0u, 1u, afunc_00001224},
+-    {0x00001240u, 0u, 1u, afunc_00001228},
+-    {0x00001240u, 0u, 1u, afunc_0000122C},
+-    {0x00001240u, 0u, 1u, afunc_00001230},
+-    {0x00001240u, 0u, 1u, afunc_00001234},
+-    {0x00001240u, 0u, 1u, afunc_00001238},
+-    {0x00001240u, 0u, 1u, afunc_0000123C},
+-    {0x00001244u, 0u, 0u, afunc_00001244},
+-    {0x00001244u, 0u, 1u, afunc_000011F0},
+-    {0x00001244u, 0u, 1u, afunc_000011F4},
+-    {0x00001244u, 0u, 1u, afunc_000011F8},
+-    {0x00001244u, 0u, 1u, afunc_000011FC},
+-    {0x00001244u, 0u, 1u, afunc_00001200},
+-    {0x00001244u, 0u, 1u, afunc_00001204},
+-    {0x00001244u, 0u, 1u, afunc_00001208},
+-    {0x00001244u, 0u, 1u, afunc_0000120C},
+-    {0x00001244u, 0u, 1u, afunc_00001210},
+-    {0x00001244u, 0u, 1u, afunc_00001214},
+-    {0x00001244u, 0u, 1u, afunc_00001218},
+-    {0x00001244u, 0u, 1u, afunc_0000121C},
+-    {0x00001244u, 0u, 1u, afunc_00001220},
+-    {0x00001244u, 0u, 1u, afunc_00001224},
+-    {0x00001244u, 0u, 1u, afunc_00001228},
+-    {0x00001244u, 0u, 1u, afunc_0000122C},
+-    {0x00001244u, 0u, 1u, afunc_00001230},
+-    {0x00001244u, 0u, 1u, afunc_00001234},
+-    {0x00001244u, 0u, 1u, afunc_00001238},
+-    {0x00001244u, 0u, 1u, afunc_0000123C},
+-    {0x00001244u, 0u, 1u, afunc_00001240},
+-    {0x00001248u, 0u, 0u, afunc_00001248},
+-    {0x00001248u, 0u, 1u, afunc_000011F0},
+-    {0x00001248u, 0u, 1u, afunc_000011F4},
+-    {0x00001248u, 0u, 1u, afunc_000011F8},
+-    {0x00001248u, 0u, 1u, afunc_000011FC},
+-    {0x00001248u, 0u, 1u, afunc_00001200},
+-    {0x00001248u, 0u, 1u, afunc_00001204},
+-    {0x00001248u, 0u, 1u, afunc_00001208},
+-    {0x00001248u, 0u, 1u, afunc_0000120C},
+-    {0x00001248u, 0u, 1u, afunc_00001210},
+-    {0x00001248u, 0u, 1u, afunc_00001214},
+-    {0x00001248u, 0u, 1u, afunc_00001218},
+-    {0x00001248u, 0u, 1u, afunc_0000121C},
+-    {0x00001248u, 0u, 1u, afunc_00001220},
+-    {0x00001248u, 0u, 1u, afunc_00001224},
+-    {0x00001248u, 0u, 1u, afunc_00001228},
+-    {0x00001248u, 0u, 1u, afunc_0000122C},
+-    {0x00001248u, 0u, 1u, afunc_00001230},
+-    {0x00001248u, 0u, 1u, afunc_00001234},
+-    {0x00001248u, 0u, 1u, afunc_00001238},
+-    {0x00001248u, 0u, 1u, afunc_0000123C},
+-    {0x00001248u, 0u, 1u, afunc_00001240},
+-    {0x00001248u, 0u, 1u, afunc_00001244},
+-    {0x0000124Cu, 0u, 0u, afunc_0000124C},
+-    {0x0000124Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000124Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000124Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000124Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000124Cu, 0u, 1u, afunc_00001200},
+-    {0x0000124Cu, 0u, 1u, afunc_00001204},
+-    {0x0000124Cu, 0u, 1u, afunc_00001208},
+-    {0x0000124Cu, 0u, 1u, afunc_0000120C},
+-    {0x0000124Cu, 0u, 1u, afunc_00001210},
+-    {0x0000124Cu, 0u, 1u, afunc_00001214},
+-    {0x0000124Cu, 0u, 1u, afunc_00001218},
+-    {0x0000124Cu, 0u, 1u, afunc_0000121C},
+-    {0x0000124Cu, 0u, 1u, afunc_00001220},
+-    {0x0000124Cu, 0u, 1u, afunc_00001224},
+-    {0x0000124Cu, 0u, 1u, afunc_00001228},
+-    {0x0000124Cu, 0u, 1u, afunc_0000122C},
+-    {0x0000124Cu, 0u, 1u, afunc_00001230},
+-    {0x0000124Cu, 0u, 1u, afunc_00001234},
+-    {0x0000124Cu, 0u, 1u, afunc_00001238},
+-    {0x0000124Cu, 0u, 1u, afunc_0000123C},
+-    {0x0000124Cu, 0u, 1u, afunc_00001240},
+-    {0x0000124Cu, 0u, 1u, afunc_00001244},
+-    {0x0000124Cu, 0u, 1u, afunc_00001248},
+-    {0x00001250u, 0u, 0u, afunc_00001250},
+-    {0x00001250u, 0u, 1u, afunc_000011F0},
+-    {0x00001250u, 0u, 1u, afunc_000011F4},
+-    {0x00001250u, 0u, 1u, afunc_000011F8},
+-    {0x00001250u, 0u, 1u, afunc_000011FC},
+-    {0x00001250u, 0u, 1u, afunc_00001200},
+-    {0x00001250u, 0u, 1u, afunc_00001204},
+-    {0x00001250u, 0u, 1u, afunc_00001208},
+-    {0x00001250u, 0u, 1u, afunc_0000120C},
+-    {0x00001250u, 0u, 1u, afunc_00001210},
+-    {0x00001250u, 0u, 1u, afunc_00001214},
+-    {0x00001250u, 0u, 1u, afunc_00001218},
+-    {0x00001250u, 0u, 1u, afunc_0000121C},
+-    {0x00001250u, 0u, 1u, afunc_00001220},
+-    {0x00001250u, 0u, 1u, afunc_00001224},
+-    {0x00001250u, 0u, 1u, afunc_00001228},
+-    {0x00001250u, 0u, 1u, afunc_0000122C},
+-    {0x00001250u, 0u, 1u, afunc_00001230},
+-    {0x00001250u, 0u, 1u, afunc_00001234},
+-    {0x00001250u, 0u, 1u, afunc_00001238},
+-    {0x00001250u, 0u, 1u, afunc_0000123C},
+-    {0x00001250u, 0u, 1u, afunc_00001240},
+-    {0x00001250u, 0u, 1u, afunc_00001244},
+-    {0x00001250u, 0u, 1u, afunc_00001248},
+-    {0x00001250u, 0u, 1u, afunc_0000124C},
+-    {0x00001254u, 0u, 0u, afunc_00001254},
+-    {0x00001254u, 0u, 1u, afunc_000011F0},
+-    {0x00001254u, 0u, 1u, afunc_000011F4},
+-    {0x00001254u, 0u, 1u, afunc_000011F8},
+-    {0x00001254u, 0u, 1u, afunc_000011FC},
+-    {0x00001254u, 0u, 1u, afunc_00001200},
+-    {0x00001254u, 0u, 1u, afunc_00001204},
+-    {0x00001254u, 0u, 1u, afunc_00001208},
+-    {0x00001254u, 0u, 1u, afunc_0000120C},
+-    {0x00001254u, 0u, 1u, afunc_00001210},
+-    {0x00001254u, 0u, 1u, afunc_00001214},
+-    {0x00001254u, 0u, 1u, afunc_00001218},
+-    {0x00001254u, 0u, 1u, afunc_0000121C},
+-    {0x00001254u, 0u, 1u, afunc_00001220},
+-    {0x00001254u, 0u, 1u, afunc_00001224},
+-    {0x00001254u, 0u, 1u, afunc_00001228},
+-    {0x00001254u, 0u, 1u, afunc_0000122C},
+-    {0x00001254u, 0u, 1u, afunc_00001230},
+-    {0x00001254u, 0u, 1u, afunc_00001234},
+-    {0x00001254u, 0u, 1u, afunc_00001238},
+-    {0x00001254u, 0u, 1u, afunc_0000123C},
+-    {0x00001254u, 0u, 1u, afunc_00001240},
+-    {0x00001254u, 0u, 1u, afunc_00001244},
+-    {0x00001254u, 0u, 1u, afunc_00001248},
+-    {0x00001254u, 0u, 1u, afunc_0000124C},
+-    {0x00001254u, 0u, 1u, afunc_00001250},
+-    {0x00001258u, 0u, 0u, afunc_00001258},
+-    {0x00001258u, 0u, 1u, afunc_000011F0},
+-    {0x00001258u, 0u, 1u, afunc_000011F4},
+-    {0x00001258u, 0u, 1u, afunc_000011F8},
+-    {0x00001258u, 0u, 1u, afunc_000011FC},
+-    {0x00001258u, 0u, 1u, afunc_00001200},
+-    {0x00001258u, 0u, 1u, afunc_00001204},
+-    {0x00001258u, 0u, 1u, afunc_00001208},
+-    {0x00001258u, 0u, 1u, afunc_0000120C},
+-    {0x00001258u, 0u, 1u, afunc_00001210},
+-    {0x00001258u, 0u, 1u, afunc_00001214},
+-    {0x00001258u, 0u, 1u, afunc_00001218},
+-    {0x00001258u, 0u, 1u, afunc_0000121C},
+-    {0x00001258u, 0u, 1u, afunc_00001220},
+-    {0x00001258u, 0u, 1u, afunc_00001224},
+-    {0x00001258u, 0u, 1u, afunc_00001228},
+-    {0x00001258u, 0u, 1u, afunc_0000122C},
+-    {0x00001258u, 0u, 1u, afunc_00001230},
+-    {0x00001258u, 0u, 1u, afunc_00001234},
+-    {0x00001258u, 0u, 1u, afunc_00001238},
+-    {0x00001258u, 0u, 1u, afunc_0000123C},
+-    {0x00001258u, 0u, 1u, afunc_00001240},
+-    {0x00001258u, 0u, 1u, afunc_00001244},
+-    {0x00001258u, 0u, 1u, afunc_00001248},
+-    {0x00001258u, 0u, 1u, afunc_0000124C},
+-    {0x00001258u, 0u, 1u, afunc_00001250},
+-    {0x00001258u, 0u, 1u, afunc_00001254},
+-    {0x0000125Cu, 0u, 0u, bios_resume_125C},
+-    {0x0000125Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000125Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000125Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000125Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000125Cu, 0u, 1u, afunc_00001200},
+-    {0x0000125Cu, 0u, 1u, afunc_00001204},
+-    {0x0000125Cu, 0u, 1u, afunc_00001208},
+-    {0x0000125Cu, 0u, 1u, afunc_0000120C},
+-    {0x0000125Cu, 0u, 1u, afunc_00001210},
+-    {0x0000125Cu, 0u, 1u, afunc_00001214},
+-    {0x0000125Cu, 0u, 1u, afunc_00001218},
+-    {0x0000125Cu, 0u, 1u, afunc_0000121C},
+-    {0x0000125Cu, 0u, 1u, afunc_00001220},
+-    {0x0000125Cu, 0u, 1u, afunc_00001224},
+-    {0x0000125Cu, 0u, 1u, afunc_00001228},
+-    {0x0000125Cu, 0u, 1u, afunc_0000122C},
+-    {0x0000125Cu, 0u, 1u, afunc_00001230},
+-    {0x0000125Cu, 0u, 1u, afunc_00001234},
+-    {0x0000125Cu, 0u, 1u, afunc_00001238},
+-    {0x0000125Cu, 0u, 1u, afunc_0000123C},
+-    {0x0000125Cu, 0u, 1u, afunc_00001240},
+-    {0x0000125Cu, 0u, 1u, afunc_00001244},
+-    {0x0000125Cu, 0u, 1u, afunc_00001248},
+-    {0x0000125Cu, 0u, 1u, afunc_0000124C},
+-    {0x0000125Cu, 0u, 1u, afunc_00001250},
+-    {0x0000125Cu, 0u, 1u, afunc_00001254},
+-    {0x0000125Cu, 0u, 1u, afunc_00001258},
+-    {0x00001260u, 0u, 0u, afunc_00001260},
+-    {0x00001260u, 0u, 1u, afunc_000011F0},
+-    {0x00001260u, 0u, 1u, afunc_000011F4},
+-    {0x00001260u, 0u, 1u, afunc_000011F8},
+-    {0x00001260u, 0u, 1u, afunc_000011FC},
+-    {0x00001260u, 0u, 1u, afunc_00001200},
+-    {0x00001260u, 0u, 1u, afunc_00001204},
+-    {0x00001260u, 0u, 1u, afunc_00001208},
+-    {0x00001260u, 0u, 1u, afunc_0000120C},
+-    {0x00001260u, 0u, 1u, afunc_00001210},
+-    {0x00001260u, 0u, 1u, afunc_00001214},
+-    {0x00001260u, 0u, 1u, afunc_00001218},
+-    {0x00001260u, 0u, 1u, afunc_0000121C},
+-    {0x00001260u, 0u, 1u, afunc_00001220},
+-    {0x00001260u, 0u, 1u, afunc_00001224},
+-    {0x00001260u, 0u, 1u, afunc_00001228},
+-    {0x00001260u, 0u, 1u, afunc_0000122C},
+-    {0x00001260u, 0u, 1u, afunc_00001230},
+-    {0x00001260u, 0u, 1u, afunc_00001234},
+-    {0x00001260u, 0u, 1u, afunc_00001238},
+-    {0x00001260u, 0u, 1u, afunc_0000123C},
+-    {0x00001260u, 0u, 1u, afunc_00001240},
+-    {0x00001260u, 0u, 1u, afunc_00001244},
+-    {0x00001260u, 0u, 1u, afunc_00001248},
+-    {0x00001260u, 0u, 1u, afunc_0000124C},
+-    {0x00001260u, 0u, 1u, afunc_00001250},
+-    {0x00001260u, 0u, 1u, afunc_00001254},
+-    {0x00001260u, 0u, 1u, afunc_00001258},
+-    {0x00001260u, 0u, 1u, bios_resume_125C},
+-    {0x00001264u, 0u, 0u, afunc_00001264},
+-    {0x00001264u, 0u, 1u, afunc_000011F0},
+-    {0x00001264u, 0u, 1u, afunc_000011F4},
+-    {0x00001264u, 0u, 1u, afunc_000011F8},
+-    {0x00001264u, 0u, 1u, afunc_000011FC},
+-    {0x00001264u, 0u, 1u, afunc_00001200},
+-    {0x00001264u, 0u, 1u, afunc_00001204},
+-    {0x00001264u, 0u, 1u, afunc_00001208},
+-    {0x00001264u, 0u, 1u, afunc_0000120C},
+-    {0x00001264u, 0u, 1u, afunc_00001210},
+-    {0x00001264u, 0u, 1u, afunc_00001214},
+-    {0x00001264u, 0u, 1u, afunc_00001218},
+-    {0x00001264u, 0u, 1u, afunc_0000121C},
+-    {0x00001264u, 0u, 1u, afunc_00001220},
+-    {0x00001264u, 0u, 1u, afunc_00001224},
+-    {0x00001264u, 0u, 1u, afunc_00001228},
+-    {0x00001264u, 0u, 1u, afunc_0000122C},
+-    {0x00001264u, 0u, 1u, afunc_00001230},
+-    {0x00001264u, 0u, 1u, afunc_00001234},
+-    {0x00001264u, 0u, 1u, afunc_00001238},
+-    {0x00001264u, 0u, 1u, afunc_0000123C},
+-    {0x00001264u, 0u, 1u, afunc_00001240},
+-    {0x00001264u, 0u, 1u, afunc_00001244},
+-    {0x00001264u, 0u, 1u, afunc_00001248},
+-    {0x00001264u, 0u, 1u, afunc_0000124C},
+-    {0x00001264u, 0u, 1u, afunc_00001250},
+-    {0x00001264u, 0u, 1u, afunc_00001254},
+-    {0x00001264u, 0u, 1u, afunc_00001258},
+-    {0x00001264u, 0u, 1u, bios_resume_125C},
+-    {0x00001264u, 0u, 1u, afunc_00001260},
+-    {0x00001268u, 0u, 0u, afunc_00001268},
+-    {0x00001268u, 0u, 1u, afunc_000011F0},
+-    {0x00001268u, 0u, 1u, afunc_000011F4},
+-    {0x00001268u, 0u, 1u, afunc_000011F8},
+-    {0x00001268u, 0u, 1u, afunc_000011FC},
+-    {0x00001268u, 0u, 1u, afunc_00001200},
+-    {0x00001268u, 0u, 1u, afunc_00001204},
+-    {0x00001268u, 0u, 1u, afunc_00001208},
+-    {0x00001268u, 0u, 1u, afunc_0000120C},
+-    {0x00001268u, 0u, 1u, afunc_00001210},
+-    {0x00001268u, 0u, 1u, afunc_00001214},
+-    {0x00001268u, 0u, 1u, afunc_00001218},
+-    {0x00001268u, 0u, 1u, afunc_0000121C},
+-    {0x00001268u, 0u, 1u, afunc_00001220},
+-    {0x00001268u, 0u, 1u, afunc_00001224},
+-    {0x00001268u, 0u, 1u, afunc_00001228},
+-    {0x00001268u, 0u, 1u, afunc_0000122C},
+-    {0x00001268u, 0u, 1u, afunc_00001230},
+-    {0x00001268u, 0u, 1u, afunc_00001234},
+-    {0x00001268u, 0u, 1u, afunc_00001238},
+-    {0x00001268u, 0u, 1u, afunc_0000123C},
+-    {0x00001268u, 0u, 1u, afunc_00001240},
+-    {0x00001268u, 0u, 1u, afunc_00001244},
+-    {0x00001268u, 0u, 1u, afunc_00001248},
+-    {0x00001268u, 0u, 1u, afunc_0000124C},
+-    {0x00001268u, 0u, 1u, afunc_00001250},
+-    {0x00001268u, 0u, 1u, afunc_00001254},
+-    {0x00001268u, 0u, 1u, afunc_00001258},
+-    {0x00001268u, 0u, 1u, bios_resume_125C},
+-    {0x00001268u, 0u, 1u, afunc_00001260},
+-    {0x00001268u, 0u, 1u, afunc_00001264},
+-    {0x0000126Cu, 0u, 0u, afunc_0000126C},
+-    {0x0000126Cu, 0u, 1u, afunc_000011F0},
+-    {0x0000126Cu, 0u, 1u, afunc_000011F4},
+-    {0x0000126Cu, 0u, 1u, afunc_000011F8},
+-    {0x0000126Cu, 0u, 1u, afunc_000011FC},
+-    {0x0000126Cu, 0u, 1u, afunc_00001200},
+-    {0x0000126Cu, 0u, 1u, afunc_00001204},
+-    {0x0000126Cu, 0u, 1u, afunc_00001208},
+-    {0x0000126Cu, 0u, 1u, afunc_0000120C},
+-    {0x0000126Cu, 0u, 1u, afunc_00001210},
+-    {0x0000126Cu, 0u, 1u, afunc_00001214},
+-    {0x0000126Cu, 0u, 1u, afunc_00001218},
+-    {0x0000126Cu, 0u, 1u, afunc_0000121C},
+-    {0x0000126Cu, 0u, 1u, afunc_00001220},
+-    {0x0000126Cu, 0u, 1u, afunc_00001224},
+-    {0x0000126Cu, 0u, 1u, afunc_00001228},
+-    {0x0000126Cu, 0u, 1u, afunc_0000122C},
+-    {0x0000126Cu, 0u, 1u, afunc_00001230},
+-    {0x0000126Cu, 0u, 1u, afunc_00001234},
+-    {0x0000126Cu, 0u, 1u, afunc_00001238},
+-    {0x0000126Cu, 0u, 1u, afunc_0000123C},
+-    {0x0000126Cu, 0u, 1u, afunc_00001240},
+-    {0x0000126Cu, 0u, 1u, afunc_00001244},
+-    {0x0000126Cu, 0u, 1u, afunc_00001248},
+-    {0x0000126Cu, 0u, 1u, afunc_0000124C},
+-    {0x0000126Cu, 0u, 1u, afunc_00001250},
+-    {0x0000126Cu, 0u, 1u, afunc_00001254},
+-    {0x0000126Cu, 0u, 1u, afunc_00001258},
+-    {0x0000126Cu, 0u, 1u, bios_resume_125C},
+-    {0x0000126Cu, 0u, 1u, afunc_00001260},
+-    {0x0000126Cu, 0u, 1u, afunc_00001264},
+-    {0x0000126Cu, 0u, 1u, afunc_00001268},
++    {0x000011F0u, 0u, 1u, afunc_000011B0},
++    {0x000011F4u, 0u, 1u, afunc_000011B0},
++    {0x000011F8u, 0u, 1u, afunc_000011B0},
++    {0x000011FCu, 0u, 1u, afunc_000011B0},
++    {0x00001200u, 0u, 1u, afunc_000011B0},
++    {0x00001204u, 0u, 1u, afunc_000011B0},
++    {0x00001208u, 0u, 1u, afunc_000011B0},
++    {0x0000120Cu, 0u, 1u, afunc_000011B0},
++    {0x00001210u, 0u, 1u, afunc_000011B0},
++    {0x00001214u, 0u, 1u, afunc_000011B0},
++    {0x00001218u, 0u, 1u, afunc_000011B0},
++    {0x0000121Cu, 0u, 1u, afunc_000011B0},
++    {0x00001220u, 0u, 1u, afunc_000011B0},
++    {0x00001224u, 0u, 1u, afunc_000011B0},
++    {0x00001228u, 0u, 1u, afunc_000011B0},
++    {0x0000122Cu, 0u, 1u, afunc_000011B0},
++    {0x00001230u, 0u, 1u, afunc_000011B0},
++    {0x00001234u, 0u, 1u, afunc_000011B0},
++    {0x00001238u, 0u, 1u, afunc_000011B0},
++    {0x0000123Cu, 0u, 1u, afunc_000011B0},
++    {0x00001240u, 0u, 1u, afunc_000011B0},
++    {0x00001244u, 0u, 1u, afunc_000011B0},
++    {0x00001248u, 0u, 1u, afunc_000011B0},
++    {0x0000124Cu, 0u, 1u, afunc_000011B0},
++    {0x00001250u, 0u, 1u, afunc_000011B0},
++    {0x00001254u, 0u, 1u, afunc_000011B0},
++    {0x00001258u, 0u, 1u, afunc_000011B0},
++    {0x0000125Cu, 0u, 1u, afunc_000011B0},
++    {0x00001260u, 0u, 1u, afunc_000011B0},
++    {0x00001264u, 0u, 1u, afunc_000011B0},
++    {0x00001268u, 0u, 1u, afunc_000011B0},
++    {0x0000126Cu, 0u, 1u, afunc_000011B0},
+     {0x00001270u, 0u, 0u, afunc_00001270},
+     {0x00001274u, 0u, 1u, afunc_00001270},
+     {0x00001278u, 1u, 0u, swi_branch_table_20},
+@@ -5153,4 +4655,4 @@ extern "C" const DispatchEntry kBiosDispatchTable[] = {
+     {0x00003FFCu, 1u, 1u, tfunc_00003F26},
+     {0x00003FFEu, 1u, 1u, tfunc_00003F26},
+ };
+-extern "C" const unsigned kBiosDispatchTableLen = 5143;
++extern "C" const unsigned kBiosDispatchTableLen = 4645;
 diff --git a/src/runtime/host_platform.cpp b/src/runtime/host_platform.cpp
-index 07f5de5..cc9a4f3 100644
+index 07f5de5..2be7e91 100644
 --- a/src/runtime/host_platform.cpp
 +++ b/src/runtime/host_platform.cpp
 @@ -1,5 +1,7 @@
@@ -1139,7 +1914,7 @@ index 07f5de5..cc9a4f3 100644
  void FramePacer::wait_for_next_frame(uint64_t frames) {
      if (uncapped_) {
          next_ = clock::now();  // keep the deadline current for re-cap
-@@ -70,17 +83,51 @@ void FramePacer::wait_for_next_frame(uint64_t frames) {
+@@ -70,17 +83,61 @@ void FramePacer::wait_for_next_frame(uint64_t frames) {
      // of trying to replay the lost time (avoids a catch-up death spiral
      // after a hitch or a breakpoint pause).
      if (now > next_ + period_) {
@@ -1172,10 +1947,20 @@ index 07f5de5..cc9a4f3 100644
 +    }
 +}
 +
-+void FramePacer::wait_half_frame() {
-+    if (uncapped_) return;
-+    const clock::time_point target = next_ - period_ / 2;
-+    if (clock::now() < target) sleep_until_point(target);
++FramePacer::clock::time_point FramePacer::smooth_origin() {
++    // Presenting interpolated frames as soon as they were ready made the gap
++    // to the next one shrink with the emulate time (6 of 8.4 ms), and on a
++    // 120 Hz display two landed in one refresh, so only 60 fps showed. The
++    // lead jumps up to a slow frame and eases back down 50 us per frame.
++    const clock::time_point start = next_ - period_;
++    const auto busy = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start);
++    lead_ = std::clamp(std::max(busy + std::chrono::milliseconds(2), lead_ - std::chrono::microseconds(50)),
++                       std::chrono::nanoseconds(0), period_ / 2);
++    return start + lead_;
++}
++
++void FramePacer::sleep_until(clock::time_point t) {
++    if (!uncapped_ && clock::now() < t) sleep_until_point(t);
 +}
 +
 +void FramePacer::sleep_until_point(clock::time_point target) {
@@ -1193,7 +1978,7 @@ index 07f5de5..cc9a4f3 100644
              LARGE_INTEGER due;
              due.QuadPart = -static_cast<LONGLONG>(
                  due_ns >= 100 ? due_ns / 100 : 1);
-@@ -88,33 +135,23 @@ void FramePacer::wait_for_next_frame(uint64_t frames) {
+@@ -88,33 +145,23 @@ void FramePacer::wait_for_next_frame(uint64_t frames) {
              if (SetWaitableTimer(t, &due, 0, nullptr, nullptr, FALSE)) {
                  WaitForSingleObject(t, INFINITE);
              } else {
@@ -1233,20 +2018,25 @@ index 07f5de5..cc9a4f3 100644
  
  std::vector<unsigned char> read_file(const std::string& path, std::string* error) {
 diff --git a/src/runtime/host_platform.h b/src/runtime/host_platform.h
-index 42208db..4a15227 100644
+index 42208db..10b3158 100644
 --- a/src/runtime/host_platform.h
 +++ b/src/runtime/host_platform.h
-@@ -52,6 +52,9 @@ public:
+@@ -52,6 +52,14 @@ public:
      // old behavior. Fast-forward presents one frame per wait already, so
      // it is unaffected. The behind-resync below still bounds real stalls.
      void wait_for_next_frame(uint64_t frames = 1);
-+    // Block until halfway to the next deadline (no deadline change): the slot
-+    // for an interpolated frame presented between two real ones.
-+    void wait_half_frame();
++    // Smooth motion: when the previous frame should be fully on screen. It
++    // trails this frame's start by the slowest recent emulate time plus 2 ms,
++    // so the frames drawn between it and this one keep an even pace.
++    std::chrono::steady_clock::time_point smooth_origin();
++    std::chrono::steady_clock::time_point frame_start() const { return next_ - period_; }
++    std::chrono::nanoseconds period() const { return period_; }
++    // Sleep until `t` without moving the deadline. No-op while uncapped.
++    void sleep_until(std::chrono::steady_clock::time_point t);
  
      // Realign the deadline to "now". Call after any non-real-time jump
      // (startup, save-state load) so the pacer doesn't try to catch up.
-@@ -64,8 +67,13 @@ public:
+@@ -64,8 +72,14 @@ public:
  
  private:
      using clock = std::chrono::steady_clock;
@@ -1257,11 +2047,12 @@ index 42208db..4a15227 100644
 +    // stays real-time on average (audio production would otherwise fall
 +    // behind the host's audio clock) without a visibly short frame.
 +    std::chrono::nanoseconds debt_{0};
++    std::chrono::nanoseconds lead_{};  // smooth_origin()'s offset into the frame
      bool uncapped_ = false;
      bool raised_timer_res_ = false;
      // HP-002: Windows high-resolution waitable timer (HANDLE, void* here to
 diff --git a/src/runtime/host_window.cpp b/src/runtime/host_window.cpp
-index 496d741..4d1aa87 100644
+index 496d741..8733a3a 100644
 --- a/src/runtime/host_window.cpp
 +++ b/src/runtime/host_window.cpp
 @@ -23,6 +23,7 @@
@@ -1602,10 +2393,47 @@ index 496d741..4d1aa87 100644
      b->texture = replacement;
      b->presentation_source_w = b->presentation_source_h = 0;
      b->base_w = base_w;
-@@ -2372,6 +2512,12 @@ bool HostWindow::drawable_size(int* width, int* height) const {
+@@ -2372,6 +2512,49 @@ bool HostWindow::drawable_size(int* width, int* height) const {
  
  void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
  
++bool HostWindow::display_timing(std::chrono::nanoseconds* period,
++                                std::chrono::steady_clock::time_point* vblank) const {
++    if (!open_ || !impl_ || !period || !vblank) return false;
++    auto* b = static_cast<Backend*>(impl_);
++    SDL_DisplayMode mode{};
++    const int index = SDL_GetWindowDisplayIndex(b->window);
++    const int hz = SDL_GetCurrentDisplayMode(index < 0 ? 0 : index, &mode) == 0 ? mode.refresh_rate : 0;
++    if (hz <= 0) return false;
++    *period = std::chrono::nanoseconds(1000000000LL / hz);
++#if defined(_WIN32)
++    // The compositor's clock gives the vblank phase. It times one display, so
++    // it is only used when its rate matches the window's display.
++    using Gcti = HRESULT (WINAPI*)(HWND, DWM_TIMING_INFO*);
++    static const Gcti gcti = [] {
++        HMODULE m = LoadLibraryA("dwmapi.dll");
++        return m ? reinterpret_cast<Gcti>(reinterpret_cast<void*>(GetProcAddress(m, "DwmGetCompositionTimingInfo")))
++                 : nullptr;
++    }();
++    DWM_TIMING_INFO ti{};
++    ti.cbSize = sizeof(ti);
++    LARGE_INTEGER freq{}, qpc{};
++    if (gcti && SUCCEEDED(gcti(nullptr, &ti)) && ti.qpcRefreshPeriod && QueryPerformanceFrequency(&freq) &&
++        QueryPerformanceCounter(&qpc)) {
++        const auto now = std::chrono::steady_clock::now();
++        auto ns = [&](long long q) {
++            return std::chrono::nanoseconds(static_cast<long long>(static_cast<double>(q) * 1e9 / freq.QuadPart));
++        };
++        const auto dwm = ns(static_cast<long long>(ti.qpcRefreshPeriod));
++        if (std::abs((dwm - *period).count()) * 20 < period->count()) {  // within 5%
++            *period = dwm;
++            *vblank = now - ns(static_cast<long long>(qpc.QuadPart - ti.qpcVBlank));
++        }
++    }
++#endif
++    return true;
++}
++
 +void HostWindow::present_scaled(const uint8_t* rgb888, int factor) {
 +    if (!open_ || !impl_ || (factor != 1 && factor != 2)) return;
 +    auto* b = static_cast<Backend*>(impl_);
@@ -1615,7 +2443,7 @@ index 496d741..4d1aa87 100644
  void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
      if (!open_ || !impl_ || !rgb888) return;
      auto* b = static_cast<Backend*>(impl_);
-@@ -2389,26 +2535,38 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
+@@ -2389,26 +2572,38 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
          };
          while ((info.max_texture_width > 0 && upload_w > unsigned(info.max_texture_width)) ||
                 (info.max_texture_height > 0 && upload_h > unsigned(info.max_texture_height))) shrink();
@@ -1669,7 +2497,7 @@ index 496d741..4d1aa87 100644
      }
      // Large elective scales can exceed an older GPU's texture limit. Keep the
      // complete CPU raster and reduce only the upload, preserving logical view
-@@ -2507,43 +2665,12 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
+@@ -2507,43 +2702,12 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
      }
      if (touch_input_enabled(b)) publish_touch_presentation(b);
  #if defined(__ANDROID__)
@@ -1715,7 +2543,7 @@ index 496d741..4d1aa87 100644
      }
  #endif
      render_host_layers(b);
-@@ -2585,6 +2712,17 @@ void HostWindow::load_input_config(const char* dir,
+@@ -2585,6 +2749,17 @@ void HostWindow::load_input_config(const char* dir,
          fast_forward_multiplier_default, 2, 10);
      const std::string base = std::string(dir) + "/";
  
@@ -1733,7 +2561,7 @@ index 496d741..4d1aa87 100644
      // keybinds.ini [player1] (recomp-ui generic format, scancode names).
      ini_scan_section((base + "keybinds.ini").c_str(), "player1",
                       [b](const char* key, const char* val) {
-@@ -2643,9 +2781,8 @@ void HostWindow::set_fullscreen(int mode) {
+@@ -2643,9 +2818,8 @@ void HostWindow::set_fullscreen(int mode) {
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
  #if defined(__ANDROID__)
@@ -1745,7 +2573,17 @@ index 496d741..4d1aa87 100644
      return;
  #endif
      if (mode < 0) mode = 0;
-@@ -2716,6 +2853,9 @@ void HostWindow::set_linear_filter(bool enabled) {
+@@ -2687,7 +2861,9 @@ void HostWindow::adjust_scale(int delta) {
+     SDL_SetWindowPosition(b->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+ }
+ 
++extern "C" volatile int g_m3_pending_volume;
+ void HostWindow::set_volume(int pct) {
++    g_m3_pending_volume = std::clamp(pct, 0, 100);
+     if (!open_ || !impl_) return;
+     auto* b = static_cast<Backend*>(impl_);
+     if (pct < 0) pct = 0;
+@@ -2716,6 +2892,9 @@ void HostWindow::set_linear_filter(bool enabled) {
  #if SDL_VERSION_ATLEAST(2, 0, 12)
      SDL_SetTextureScaleMode(b->texture,
          enabled ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
@@ -1755,7 +2593,7 @@ index 496d741..4d1aa87 100644
  #endif
  }
  
-@@ -2735,6 +2875,19 @@ bool HostWindow::audio_enabled() const {
+@@ -2735,6 +2914,19 @@ bool HostWindow::audio_enabled() const {
      return b->audio_dev && SDL_GetAudioDeviceStatus(b->audio_dev) == SDL_AUDIO_PLAYING;
  }
  
@@ -1775,7 +2613,7 @@ index 496d741..4d1aa87 100644
  void HostWindow::set_resize_driven_view(bool enabled) {
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
-@@ -2755,6 +2908,41 @@ void HostWindow::set_runtime_ui(RecompRuntimeUi* ui) {
+@@ -2755,6 +2947,41 @@ void HostWindow::set_runtime_ui(RecompRuntimeUi* ui) {
      if (!open_ || !impl_) return;
      static_cast<Backend*>(impl_)->runtime_ui = ui;
  }
@@ -1817,7 +2655,7 @@ index 496d741..4d1aa87 100644
  #endif
  
  void HostWindow::configure_touch(bool policy, std::uint32_t claims,
-@@ -2777,13 +2965,16 @@ void HostWindow::configure_touch(bool policy, std::uint32_t claims,
+@@ -2777,13 +3004,16 @@ void HostWindow::configure_touch(bool policy, std::uint32_t claims,
      if (!b->pad_choice_saved) {
          const bool platform_default =
  #if defined(__ANDROID__)
@@ -1836,7 +2674,7 @@ index 496d741..4d1aa87 100644
      TouchHub& hub = TouchHub::instance();
      hub.set_claims(policy ? claims : 0);
      // A game that owns long-press gets a snappier threshold; the engine's own
-@@ -2809,7 +3000,8 @@ void HostWindow::set_touch_config_dir(const char* dir) {
+@@ -2809,7 +3039,8 @@ void HostWindow::set_touch_config_dir(const char* dir) {
      ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Touch",
                       [b](const char* key, const char* val) {
          if (SDL_strcasecmp(key, "pad_visible") == 0) {
@@ -1846,7 +2684,7 @@ index 496d741..4d1aa87 100644
              b->pad_choice_saved = true;
          } else if (SDL_strcasecmp(key, "toggle_x") == 0) {
              b->toggle_fx = std::clamp(static_cast<float>(std::atof(val)), 0.0f, 1.0f);
-@@ -2819,6 +3011,13 @@ void HostWindow::set_touch_config_dir(const char* dir) {
+@@ -2819,6 +3050,13 @@ void HostWindow::set_touch_config_dir(const char* dir) {
              b->toggle_pos_saved = true;
          }
      });
@@ -1860,7 +2698,7 @@ index 496d741..4d1aa87 100644
      ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Audio",
                       [b](const char* key, const char* val) {
          if (SDL_strcasecmp(key, "enhanced") == 0) {
-@@ -2828,6 +3027,22 @@ void HostWindow::set_touch_config_dir(const char* dir) {
+@@ -2828,6 +3066,22 @@ void HostWindow::set_touch_config_dir(const char* dir) {
      });
  }
  
@@ -1883,7 +2721,7 @@ index 496d741..4d1aa87 100644
  bool HostWindow::saved_audio_enhanced(bool& enabled) const {
      if (!open_ || !impl_) return false;
      auto* b = static_cast<const Backend*>(impl_);
-@@ -2853,9 +3068,12 @@ void HostWindow::set_touch_pad_visible(bool visible) {
+@@ -2853,9 +3107,12 @@ void HostWindow::set_touch_pad_visible(bool visible) {
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
      visible = visible && b->touch_controls;
@@ -1898,7 +2736,7 @@ index 496d741..4d1aa87 100644
      // Any finger currently on a pad button is released with the pad.
      for (auto& t : b->touches)
          if (t.active && t.pad) t.buttons = 0;
-@@ -3011,7 +3229,7 @@ HostWindow::Events HostWindow::pump() {
+@@ -3011,7 +3268,7 @@ HostWindow::Events HostWindow::pump() {
              ImGui::SetCurrentContext(b->runtime_imgui_context);
              ImGui_ImplSDL2_ProcessEvent(&e);
          }
@@ -1907,7 +2745,7 @@ index 496d741..4d1aa87 100644
  #endif
          if (e.type == SDL_QUIT) {
              ev.quit = true;
-@@ -3025,12 +3243,17 @@ HostWindow::Events HostWindow::pump() {
+@@ -3025,12 +3282,17 @@ HostWindow::Events HostWindow::pump() {
              ev.terminating = true;
              ev.quit = true;
          } else if (e.type == SDL_CONTROLLERDEVICEADDED) {
@@ -1926,7 +2764,7 @@ index 496d741..4d1aa87 100644
              }
          } else if (e.type == SDL_WINDOWEVENT &&
                     e.window.event == SDL_WINDOWEVENT_CLOSE) {
-@@ -3225,25 +3448,70 @@ HostWindow::Events HostWindow::pump() {
+@@ -3225,25 +3487,70 @@ HostWindow::Events HostWindow::pump() {
      // inputs. Keyboard and controller are additive so either can be used at
      // any time, including while testing motion.
      if (b->controller && SDL_GameControllerGetAttached(b->controller)) {
@@ -1976,7 +2814,7 @@ index 496d741..4d1aa87 100644
 +            }
 +            if (assist_pad_down(b->controller, binding))
 +                keys &= static_cast<uint16_t>(~(1u << bits[row]));
-         }
++        }
 +#else
 +        constexpr int buttons[] = {0, 1, 4, 6, 14, 13, 11, 12, 10, 9};
 +        for (int bit = 0; bit < 10; ++bit)
@@ -2002,7 +2840,7 @@ index 496d741..4d1aa87 100644
 +        if (SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000) {
 +            keys &= static_cast<uint16_t>(~(1u << 8));
 +            keys &= static_cast<uint16_t>(~(1u << 1));
-+        }
+         }
 +
 +        // Left Analog Thumbstick -> D-Pad movement
 +        const int16_t stick_x = SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_LEFTX);
@@ -2015,15 +2853,18 @@ index 496d741..4d1aa87 100644
      }
      if (b->touch_controls) {
          const uint16_t touch_buttons = active_touch_buttons(b);
-@@ -3369,6 +3637,7 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
+@@ -3369,6 +3676,10 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
  
  void HostWindow::present(const uint8_t* /*rgb888*/) {}
  void HostWindow::present(const uint8_t*, unsigned, unsigned) {}
 +void HostWindow::present_scaled(const uint8_t*, int) {}
++bool HostWindow::display_timing(std::chrono::nanoseconds*, std::chrono::steady_clock::time_point*) const {
++    return false;
++}
  
  void HostWindow::load_input_config(const char* /*dir*/,
                                     bool /*assist_tools_default*/,
-@@ -3381,13 +3650,19 @@ int  HostWindow::volume() const { return 100; }
+@@ -3381,13 +3692,19 @@ int  HostWindow::volume() const { return 100; }
  int  HostWindow::window_scale() const { return 1; }
  void HostWindow::set_linear_filter(bool /*enabled*/) {}
  bool HostWindow::linear_filter() const { return false; }
@@ -2044,10 +2885,18 @@ index 496d741..4d1aa87 100644
  void HostWindow::configure_touch(bool /*policy*/, std::uint32_t /*claims*/,
                                   int /*pad_default*/, bool /*emulate_touch*/) {}
 diff --git a/src/runtime/host_window.h b/src/runtime/host_window.h
-index 073ef16..7d9b581 100644
+index 073ef16..b84109e 100644
 --- a/src/runtime/host_window.h
 +++ b/src/runtime/host_window.h
-@@ -103,13 +103,25 @@ public:
+@@ -23,6 +23,7 @@
+ 
+ #pragma once
+ 
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ 
+@@ -103,13 +104,25 @@ public:
      // false until the player has chosen.
      bool saved_audio_enhanced(bool& enabled) const;
      void save_audio_enhanced(bool enabled);
@@ -2073,7 +2922,7 @@ index 073ef16..7d9b581 100644
  #endif
      // ---- touch (touch_input.h) ---------------------------------------------
      // `policy` = the game consumes touch through RunOptions::input_frame;
-@@ -159,6 +171,10 @@ public:
+@@ -159,6 +172,15 @@ public:
      // The enhanced texture is uploaded and presented directly, without a
      // native-resolution intermediate render target.
      void present(const uint8_t* rgb888, unsigned width, unsigned height);
@@ -2081,14 +2930,19 @@ index 073ef16..7d9b581 100644
 +    // same destination; smooth motion's interpolated frames use 2 for
 +    // half-pixel motion.
 +    void present_scaled(const uint8_t* rgb888, int factor);
++    // Refresh period of the window's display, and (Windows compositor only)
++    // when its latest vblank was; `vblank` is left alone when unknown.
++    // Returns false when the period is unknown.
++    bool display_timing(std::chrono::nanoseconds* period,
++                        std::chrono::steady_clock::time_point* vblank) const;
  
      // Push `count` int16_t mono samples assuming the engine's 65.536 kHz
      // source rate. Prefer push_audio_block when the caller knows the real
 diff --git a/src/runtime/host_window_web.cpp b/src/runtime/host_window_web.cpp
-index cdd53be..dad0d23 100644
+index cdd53be..03716a3 100644
 --- a/src/runtime/host_window_web.cpp
 +++ b/src/runtime/host_window_web.cpp
-@@ -317,6 +317,14 @@ void HostWindow::close() {
+@@ -317,6 +317,17 @@ void HostWindow::close() {
  }
  bool HostWindow::set_surface_size(int w,int h) { if(!impl_||!dimensions(w,h))return false; backend(impl_)->width=w;backend(impl_)->height=h;return true; }
  bool HostWindow::drawable_size(int* w,int* h) const { if(!impl_||!w||!h)return false; auto d=backend(impl_)->shared.control.drawable.load(); *w=d&65535;*h=d>>16;return *w&&*h; }
@@ -2096,6 +2950,9 @@ index cdd53be..dad0d23 100644
 +// skipped and native frames go through present().
 +void HostWindow::present_scaled(const uint8_t* rgb, int factor) {
 +    if (factor == 1) present(rgb);
++}
++bool HostWindow::display_timing(std::chrono::nanoseconds*, std::chrono::steady_clock::time_point*) const {
++    return false;
 +}
 +void HostWindow::set_fill_display(bool) {}
 +bool HostWindow::fill_display() const { return false; }
@@ -2136,10 +2993,15 @@ index ba1da4d..5ba17b9 100644
      gi.widescreen_supported = opts.launcher_expose_widescreen &&
          opts.widescreen_view_width > 240 ? 1 : 0;
 diff --git a/src/runtime/mobile_platform.cpp b/src/runtime/mobile_platform.cpp
-index 0b3379e..709a451 100644
+index 0b3379e..27a2933 100644
 --- a/src/runtime/mobile_platform.cpp
 +++ b/src/runtime/mobile_platform.cpp
-@@ -6,6 +6,7 @@
+@@ -1,3 +1,4 @@
++#include <filesystem>
+ // mobile_platform.cpp — see mobile_platform.h.
+ 
+ #if defined(__linux__) && !defined(_GNU_SOURCE)
+@@ -6,6 +7,7 @@
  
  #include "mobile_platform.h"
  
@@ -2147,7 +3009,7 @@ index 0b3379e..709a451 100644
  #include <cstdint>
  #include <cstdio>
  #include <cstdlib>
-@@ -16,6 +17,7 @@
+@@ -16,10 +18,15 @@
  
  #if defined(__ANDROID__)
  #include <pthread.h>
@@ -2155,7 +3017,15 @@ index 0b3379e..709a451 100644
  #include <unistd.h>
  
  #include <SDL.h>
-@@ -44,7 +46,60 @@ struct StackedCall {
+ #include <SDL_system.h>
++#elif defined(__APPLE__) && TARGET_OS_IPHONE
++#include <pthread.h>
++#include <unistd.h>
++#include <SDL.h>
+ #endif
+ 
+ namespace gbarecomp {
+@@ -44,7 +51,62 @@ struct StackedCall {
      std::size_t stack_bytes = 0;
      int result = 1;
  };
@@ -2178,6 +3048,7 @@ index 0b3379e..709a451 100644
 +}
 +
 +void pin_to_big_cores() {
++#if defined(__ANDROID__)
 +    const char* env = std::getenv("GBARECOMP_BIG_CORES");
 +    if (!env || !*env || *env == '0') return;
 +    const long cpus = std::min<long>(sysconf(_SC_NPROCESSORS_CONF), CPU_SETSIZE);
@@ -2209,6 +3080,7 @@ index 0b3379e..709a451 100644
 +        return;
 +    }
 +    std::fprintf(stderr, "mobile: game thread big-core affinity unavailable (no cpu topology)\n");
++#endif
 +}
 +
  void* run_stacked(void* arg) {
@@ -2216,6 +3088,130 @@ index 0b3379e..709a451 100644
      auto* call = static_cast<StackedCall*>(arg);
      // Arm this thread's budget: keep kGuardMargin of headroom for the
      // runtime's own transient frames between two instruction-boundary
+@@ -61,7 +123,15 @@ void* run_stacked(void* arg) {
+ 
+ int mobile_run_with_stack(int (*entry)(int, char**), int argc, char** argv,
+                           std::size_t stack_bytes) {
+-#if defined(__ANDROID__)
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    (void)stack_bytes;
++    constexpr std::size_t kIosMainGuardMargin = 256u * 1024u;
++    host_stack_guard_arm_current(kIosMainGuardMargin);
++    const int result = entry(argc, argv);
++    g_stack_guard_lo = 0;
++    g_stack_guard_crit_lo = 0;
++    return result;
++#elif defined(__ANDROID__)
+     StackedCall call;
+     call.entry = entry;
+     call.argc = argc;
+@@ -123,6 +193,18 @@ void host_stack_guard_arm_current(std::size_t reserve_bytes) {
+         }
+         pthread_attr_destroy(&attr);
+     }
++#elif defined(__APPLE__) && TARGET_OS_IPHONE
++	void* top = pthread_get_stackaddr_np(pthread_self());
++	const std::size_t size = pthread_get_stacksize_np(pthread_self());
++	if (top != nullptr && size > 0) {
++		const std::uintptr_t lo = reinterpret_cast<std::uintptr_t>(top) - size;
++		const std::size_t margin =
++			reserve_bytes < size ? reserve_bytes : size / 2u;
++		g_stack_guard_lo = lo + margin;
++		const std:: size_t crit =
++			(size / 16u) < 512u * 1024u ? size / 16u : 512u * 1024u;
++		g_stack_guard_crit_lo = lo + crit;
++	}
+ #else
+     (void)reserve_bytes;
+ #endif
+@@ -130,10 +212,35 @@ void host_stack_guard_arm_current(std::size_t reserve_bytes) {
+ 
+ bool mobile_prepare_process(std::vector<std::string>& args,
+                             const MobileProcessOptions& options) {
++#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+ #if defined(__ANDROID__)
+     if (const char* storage = SDL_AndroidGetInternalStoragePath())
+         (void)chdir(storage);
+     const char* log = options.log_file ? options.log_file : "android-runtime.log";
++#else
++	// On iOS, HOME/Documents is the folder visible inside the Apple Files app,
++    // so you can easily drop mother3.gba and gba_bios.bin in from your phone!
++	std::string ios_docs;
++	if (const char* home = std::getenv("HOME")) {
++		ios_docs = std::string(home) + "/Documents";
++		(void)chdir(ios_docs.c_str());
++		if (char* base = SDL_GetBasePath()) {
++			std::error_code ec;
++			std::filesystem::path bpath(base);
++			for (const char* sub : {"variants", "payload", "assets"}) {
++				if (std::filesystem::exists(bpath / sub, ec)) {
++					std::filesystem::copy(bpath / sub, std::filesystem::path(ios_docs) / sub,
++						std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
++				}
++			}
++			std::filesystem::create_directories(std::filesystem::path(ios_docs) / "saves", ec);
++			std::filesystem::create_directories(std::filesystem::path(ios_docs) / "bios", ec);
++			std::filesystem::create_directories(std::filesystem::path(ios_docs) / "roms", ec);
++			SDL_free(base);
++		}
++	}
++	const char* log = options.log_file ? options.log_file  : "ios-runtime.log";
++#endif
+     // One open file description for both streams: separate freopen()s would
+     // give stderr and stdout independent offsets, and each would overwrite
+     // the other's lines in the shared log.
+@@ -145,11 +252,15 @@ bool mobile_prepare_process(std::vector<std::string>& args,
+     // No compiler on the device: misses bridge loudly and are reported for
+     // the offline heal loop instead of attempting an on-device rebuild.
+     setenv("GBARECOMP_SELFHEAL_RECOMPILE", "0", 0);
++#if defined(__ANDROID__)
++	const char* storage_str = SDL_AndroidGetInternalStoragePath();
++#else
++	const char* storage_str = ios_docs.empty() ? nullptr : ios_docs.c_str();
++#endif
+     std::fprintf(stderr,
+                  "mobile: storage=%s selfheal=report-only "
+                  "(dispatch misses bridge loudly -> recomp_master_misses.toml.frag)\n",
+-                 SDL_AndroidGetInternalStoragePath()
+-                     ? SDL_AndroidGetInternalStoragePath() : "(unknown)");
++				 storage_str ? storage_str : "(unknown)");
+     if (args.empty()) args.emplace_back("main");
+     if (options.program_name) args[0] = options.program_name;
+     if (options.game_config) args.emplace_back(options.game_config);
+diff --git a/src/runtime/mobile_platform.h b/src/runtime/mobile_platform.h
+index 3dcf69f..57603d4 100644
+--- a/src/runtime/mobile_platform.h
++++ b/src/runtime/mobile_platform.h
+@@ -21,6 +21,11 @@
+ #include <cstddef>
+ #include <string>
+ #include <vector>
++// Apple's TargetConditionals.h lets us distinguish iOS/iPadOS (TARGET_OS_IPHONE)
++// from macOS desktop builds (__APPLE__ alone is true on both).
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
+ 
+ namespace gbarecomp {
+ 
+@@ -66,7 +71,7 @@ void host_stack_guard_arm_current(std::size_t reserve_bytes);
+ // Their arming operation cannot establish bounds; an out-of-line probe would
+ // still pay the thread-local lookup (emulated TLS on MinGW) on every branch.
+ constexpr bool host_stack_guard_supported() {
+-#if defined(__linux__)
++#if defined(__linux__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+     return true;
+ #else
+     return false;
+@@ -75,7 +80,7 @@ constexpr bool host_stack_guard_supported() {
+ 
+ // True when built for a mobile platform (compile-time).
+ constexpr bool mobile_platform() {
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+     return true;
+ #else
+     return false;
 diff --git a/src/runtime/multiplayer_view.cpp b/src/runtime/multiplayer_view.cpp
 index 266c987..010c5ae 100644
 --- a/src/runtime/multiplayer_view.cpp
@@ -2237,311 +3233,107 @@ index 266c987..010c5ae 100644
          gba::g_ws_affine_filter_enabled = filter;
      }
  };
+diff --git a/src/runtime/overlay_compile.cpp b/src/runtime/overlay_compile.cpp
+index 5bb495d..ffd9117 100644
+--- a/src/runtime/overlay_compile.cpp
++++ b/src/runtime/overlay_compile.cpp
+@@ -1,3 +1,6 @@
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
+ // overlay_compile.cpp — see overlay_compile.h.
+ 
+ #include "overlay_compile.h"
+@@ -275,7 +278,12 @@ bool load_and_resolve(const std::string& dll, uint32_t pc,
+ int run_process(const std::string& cmdline, const std::string& logpath,
+                 std::string*) {
+     std::string c = cmdline + " > \"" + logpath + "\" 2>&1";
++    #if defined(__APPLE__) && TARGET_OS_IPHONE
++    (void)c;
++    return -1;
++#else
+     return std::system(c.c_str());
++#endif
+ }
+ // POSIX mirror of the Win32 path above: dlopen/dlsym for
+ // LoadLibrary/GetProcAddress. Until this existed, every heal off Windows failed
 diff --git a/src/runtime/runtime.cpp b/src/runtime/runtime.cpp
-index 1eb5011..2377d9c 100644
+index 1eb5011..60e21ae 100644
 --- a/src/runtime/runtime.cpp
 +++ b/src/runtime/runtime.cpp
-@@ -197,6 +197,9 @@ struct Args {
-     bool sharp_filter = false;    // --sharp-filter 1: integer prescale + linear finish
-     int internal_resolution = 1;
-     bool internal_resolution_set = false;
-+    // [video] integer_scale = true|false — default for whole-multiple
-+    // presentation on Android (the in-game menu choice, once made, wins).
-+    bool integer_scale = false;
-     bool affine_filter = false;   // --affine-filter 1: game-authorized smoothing
-     float gyro_sensitivity = 0.25f; // --gyro-sensitivity 0.25..4.00
-     // [audio] shadow = true|false — arm the MP2K verified-enhancement shadow
-@@ -293,6 +296,7 @@ int runtime_ui_get(void* opaque, const RecompRuntimeUiItem* item, int* out) {
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_RESOLUTION_SCALE) == 0 && c->internal_resolution)
-         *out = *c->internal_resolution;
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_LINEAR_FILTER) == 0) *out = c->window->linear_filter();
-+    else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_INTEGER_SCALE) == 0) *out = c->window->integer_scale();
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_AUDIO) == 0) *out = c->window->audio_enabled();
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VOLUME) == 0) *out = c->window->volume();
-     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_STATE_SLOT) == 0) *out = c->state_slot;
-@@ -306,6 +310,10 @@ int runtime_ui_get(void* opaque, const RecompRuntimeUiItem* item, int* out) {
-     else if (std::strcmp(item->key,
-                          GBARECOMP_UI_KEY_FAST_FORWARD_SPEED) == 0)
-         *out = c->fast_forward_multiplier;
-+    else if (std::strcmp(item->key, "gbarecomp.display.fill") == 0)
-+        *out = c->window->fill_display();
-+    else if (std::strcmp(item->key, "gbarecomp.touch.pad_visible") == 0)
-+        *out = c->window->touch_pad_visible();
- #if defined(RECOMP_RUNTIME_UI_KEY_GYRO_SENSITIVITY)
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_GYRO_SENSITIVITY) == 0 &&
-              c->gyro_sensitivity)
-@@ -329,6 +337,8 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
-         *c->internal_resolution = std::clamp(value, 1, int(gba::GbaHighResolutionFrame::kMaxScale));
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_LINEAR_FILTER) == 0)
+@@ -316,6 +316,7 @@ int runtime_ui_get(void* opaque, const RecompRuntimeUiItem* item, int* out) {
+     return 1;
+ }
+ 
++extern "C" volatile int g_m3_pending_volume;
+ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
+     auto* c = static_cast<RuntimeUiContext*>(opaque);
+     if (!c || !c->window || !item) return 0;
+@@ -331,8 +332,10 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
          c->window->set_linear_filter(value != 0);
-+    else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_INTEGER_SCALE) == 0)
-+        c->window->set_integer_scale(value != 0, /*persist=*/true);
      else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_AUDIO) == 0)
          c->window->set_audio_enabled(value != 0);
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VOLUME) == 0)
-@@ -349,6 +359,10 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
-     else if (std::strcmp(item->key,
-                          GBARECOMP_UI_KEY_FAST_FORWARD_SPEED) == 0)
-         c->fast_forward_multiplier = std::clamp(value, 2, 10);
-+    else if (std::strcmp(item->key, "gbarecomp.display.fill") == 0)
-+        c->window->set_fill_display(value != 0);
-+    else if (std::strcmp(item->key, "gbarecomp.touch.pad_visible") == 0)
-+        c->window->set_touch_pad_visible(value != 0);
- #if defined(RECOMP_RUNTIME_UI_KEY_GYRO_SENSITIVITY)
-     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_GYRO_SENSITIVITY) == 0 &&
-              c->gyro_sensitivity)
-@@ -810,6 +824,8 @@ bool apply_toml_file(const std::filesystem::path& path, Args* args,
-                 return false;
-             }
-             args->internal_resolution = scale;
-+        } else if (section == "video" && key == "integer_scale") {
-+            args->integer_scale = (val == "true" || val == "1");
-         } else if (section == "video" && key == "affine_filter") {
-             args->affine_filter = (val == "true" || val == "1");
-         } else if (section == "video" && key == "widescreen") {
-@@ -1560,7 +1576,12 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         return 1;
-     }
-     std::string rom_sha1 = lower_ascii(gba::sha1(rom.data(), rom.size()).hex());
--    if (rom_sha1 != lower_ascii(args.rom_sha1)) {
-+    if (opts.rom_post_load_hook &&
-+        opts.rom_post_load_hook(rom.data(), rom.size(), rom_sha1.c_str()))
-+        rom_sha1 = lower_ascii(gba::sha1(rom.data(), rom.size()).hex());
-+    const std::string alt_sha1 = opts.alt_rom_sha1 ? lower_ascii(opts.alt_rom_sha1) : "";
-+    if (!opts.allow_rom_sha1_mismatch && rom_sha1 != lower_ascii(args.rom_sha1) &&
-+        (alt_sha1.empty() || rom_sha1 != alt_sha1)) {
-         std::fprintf(stderr,
-                      "[gbarecomp:runtime] ROM SHA-1 mismatch: got %s expected %s\n",
-                      rom_sha1.c_str(), args.rom_sha1.c_str());
-@@ -1712,6 +1733,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-     g_force_interp = 0;
-     if (const char* fi = std::getenv("GBARECOMP_FORCE_INTERP"))
-         g_force_interp = (fi[0] && fi[0] != '0') ? 1 : 0;
-+    // Never dispatch a different translation through this build's native corpus.
-+    if (opts.allow_rom_sha1_mismatch && rom_sha1 != lower_ascii(opts.builtin_rom_sha1 ? opts.builtin_rom_sha1 : args.rom_sha1) &&
-+        (alt_sha1.empty() || rom_sha1 != alt_sha1))
-+        g_force_interp = 1;
-     std::fprintf(stderr, "cpu_backend=%s\n",
-                  g_force_interp ? "interpreter (GBARECOMP_FORCE_INTERP)"
-                                 : "static-recompiled");
-@@ -2293,6 +2318,12 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-             uint32_t n = runtime_swi_log_save_file(sl);
-             std::printf("swi_log_saved path=\"%s\" records=%u\n", sl, n);
-         }
-+        if (const char* ew = std::getenv("GBARECOMP_EWRAM_DUMP")) {
-+            std::ofstream dump(ew, std::ios::binary | std::ios::trunc);
-+            dump.write(reinterpret_cast<const char*>(bus.ewram_ptr()),
-+                       256 * 1024);
-+            std::printf("ewram_dump_saved path=\"%s\" ok=%d\n", ew, dump ? 1 : 0);
-+        }
-         if (const char* iw = std::getenv("GBARECOMP_IWRAM_DUMP")) {
-             std::ofstream dump(iw, std::ios::binary | std::ios::trunc);
-             dump.write(reinterpret_cast<const char*>(bus.iwram_ptr()),
-@@ -2379,7 +2410,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-     };
-     auto do_savestate_save = [&](const std::string& path,
-                                  std::string& e) -> bool {
--        return debug::save_state(path.c_str(), make_snapshot_ctx(), &e);
-+        if (!debug::save_state(path.c_str(), make_snapshot_ctx(), &e)) return false;
-+        if (opts.savestate_written) opts.savestate_written(path.c_str());
-+        return true;
-     };
-     auto do_savestate_load = [&](const std::string& path,
-                                  std::string& e) -> bool {
-@@ -2407,6 +2440,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
- #if defined(GBARECOMP_WEB_HOST)
-         bus.audio().discard_playback();
- #endif
-+        if (opts.savestate_loaded) opts.savestate_loaded(path.c_str());
-         return true;
-     };
-     auto do_savestate_save_bytes = [&](std::vector<uint8_t>& bytes,
-@@ -2427,6 +2461,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
- #if defined(GBARECOMP_WEB_HOST)
-         bus.audio().discard_playback();
- #endif
-+        if (opts.savestate_loaded) opts.savestate_loaded(nullptr);
-         return true;
-     };
- 
-@@ -2664,12 +2699,17 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-     if (opts.input_frame) {
-         TouchHub::instance().set_claims(opts.touch_gesture_claims);
-         publish_headless_touch_presentation();
--        runtime_set_vblank_input_hook(run_touch_policy);
-         if (!args.quiet)
-             std::printf("touch_policy=ENABLED claims=0x%x%s\n",
-                         static_cast<unsigned>(opts.touch_gesture_claims),
-                         touch_policy_suspended ? " (suspended: input replay)" : "");
-     }
-+    if (opts.input_frame || opts.vblank_frame) {
-+        runtime_set_vblank_input_hook([&run_touch_policy, &opts]() {
-+            if (opts.input_frame) run_touch_policy();
-+            if (opts.vblank_frame) opts.vblank_frame();
-+        });
+-    else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VOLUME) == 0)
++    else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VOLUME) == 0) {
+         c->window->set_volume(value);
++        g_m3_pending_volume = value;
 +    }
-     struct ClearVblankInputHook {
-         ~ClearVblankInputHook() { runtime_set_vblank_input_hook(nullptr); }
-     } clear_vblank_input_hook;
-@@ -2909,6 +2949,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         framedump_start = std::strtoull(e, nullptr, 0);
-     if (const char* e = std::getenv("GBARECOMP_FRAMEDUMP_COUNT"))
-         framedump_max = std::atoi(e);
-+    // Optional sampling stride for long soak captures (default 1 = every frame).
-+    uint64_t framedump_stride = 1;
-+    if (const char* e = std::getenv("GBARECOMP_FRAMEDUMP_STRIDE"))
-+        framedump_stride = std::max<uint64_t>(1, std::strtoull(e, nullptr, 0));
-     // ── HP-002 frame-phase ring ─────────────────────────────────────────
-     // Opt-in per-presented-frame breakdown of where wall time went
-     // between consecutive presents: guest execution, view-sync + render/
-@@ -2992,13 +3036,33 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-     };
-     FramePhaseRing frame_phase;
-     uint64_t high_resolution_presented = 0;
-+    // Declared ahead of present_live_frame, which reads both.
-+    // Wall-clock frame limiter — constructed only for windowed runs so
-+    // the Windows timer-resolution bump doesn't apply to headless/TCP
-+    // batch runs (which intentionally run uncapped).
-+    std::optional<FramePacer> pacer;
-+    bool fast_forward_active = false;
-+    // Smooth motion: a game that installs gba::g_present_interpolator gets an
-+    // interpolated frame presented half a period before each paced real one.
-+    // Native presentation only; the high-resolution surface is presented as is.
-+    std::vector<uint8_t> interpolated_fb;
-     auto present_live_frame = [&]() {
-         ppu.set_internal_resolution(args.internal_resolution, opts.high_resolution_affine_provider);
-         if (const auto* pixels = ppu.high_resolution_framebuffer()) {
-             const auto* hd = ppu.high_resolution();
-             win.present(pixels, hd->width(), hd->height());
-             ++high_resolution_presented;
--        } else win.present(live_fb.data());
-+            return;
-+        }
-+        if (gba::g_present_interpolator && pacer && !pacer->uncapped() && !fast_forward_active) {
-+            interpolated_fb.resize(ppu.render_bytes() * 4u);
-+            if (gba::g_present_interpolator(&ppu, live_fb.data(), ppu.render_width(),
-+                                            ppu.render_height(), interpolated_fb.data())) {
-+                win.present_scaled(interpolated_fb.data(), 2);
-+                pacer->wait_half_frame();
-+            }
-+        }
-+        win.present(live_fb.data());
-     };
-     auto apply_runtime_view_geometry = [&](ViewGeometry geometry) -> bool {
-         if (opts.view_geometry) opts.view_geometry(&geometry, 0, 0);
-@@ -3089,10 +3153,6 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         }
+     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_STATE_SLOT) == 0)
+         c->state_slot = std::clamp(value, 1, c->state_slot_count);
+     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_FPS) == 0)
+@@ -1348,6 +1351,7 @@ extern "C" unsigned g_ws_extra  = 0;
+ extern "C" unsigned g_ws_extra_left  = 0;
+ extern "C" unsigned g_ws_extra_right = 0;
+ extern "C" unsigned g_ws_view_width  = 240;
++extern "C" volatile int g_m3_view_dirty;
+ 
+ int run_game(int argc, char** argv, const RunOptions& opts) {
+     // Game runners install this before entering run_game(). Clear it on every
+@@ -3033,8 +3037,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
          return true;
      };
--    // Wall-clock frame limiter — constructed only for windowed runs so
--    // the Windows timer-resolution bump doesn't apply to headless/TCP
--    // batch runs (which intentionally run uncapped).
--    std::optional<FramePacer> pacer;
-     // Windowed observe-mode TCP (see Args::tcp_observe_port). Savestate
-     // requests from its thread are executed by the main loop at the next
-     // present, the only point where machine state is consistent.
-@@ -3182,6 +3242,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-             win.configure_touch(opts.input_frame != nullptr,
-                                 opts.touch_gesture_claims,
-                                 opts.touch_pad_default, args.touch_emulation);
-+            win.set_integer_scale(args.integer_scale, /*persist=*/false);
-             win.set_touch_config_dir(exe_dir.c_str());
-             // The player's menu choice wins over [audio].shadow;
-             // GBARECOMP_AUDIO_SHADOW still overrides both.
-@@ -3232,6 +3293,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         }
-         if (args.fullscreen) win.set_fullscreen(args.fullscreen);
-         win.set_volume(args.volume);
-+        win.set_menu_scancode(opts.runtime_menu_scancode);
-         win.set_fps_readout(opts.show_fps_by_default);
+     auto sync_resize_driven_view = [&]() -> bool {
++        publish_extended_view_frame();
  #if defined(GBARECOMP_RUNTIME_UI)
-         runtime_ui_context.window = &win;
-@@ -3263,7 +3325,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         RecompRuntimeUiStandardConfig runtime_ui_config{};
-         runtime_ui_config.menu.title = runtime_title;
-         runtime_ui_config.menu.subtitle = "Game Boy Advance runtime settings";
--        runtime_ui_config.menu.theme = "gba";
-+        runtime_ui_config.menu.theme = opts.runtime_ui_theme ? opts.runtime_ui_theme : "gba";
- #if defined(RECOMP_RUNTIME_UI_HAS_PRESENTATION_FLAGS)
-         if (opts.ui_touch_friendly) {
-             runtime_ui_config.menu.presentation_flags |=
-@@ -3308,15 +3370,16 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-                 RECOMP_RUNTIME_UI_STANDARD_SAVE_STATE |
-                 RECOMP_RUNTIME_UI_STANDARD_LOAD_STATE;
+-        if (runtime_ui_context.view_mode_dirty && win.is_open()) {
++        const bool m3_dirty = g_m3_view_dirty != 0;
++        if (m3_dirty) g_m3_view_dirty = 0;
++        if ((runtime_ui_context.view_mode_dirty || m3_dirty) && win.is_open()) {
+             runtime_ui_context.view_mode_dirty = false;
+             resize_view_enabled = runtime_ui_context.view_mode ==
+                 RECOMP_RUNTIME_UI_VIEW_ADAPTIVE;
+@@ -3075,6 +3082,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
+                 drawable_w, drawable_h, opts.max_resize_view_width,
+                 opts.max_resize_view_height, gba::GbaPpu::kMaxRenderWidth,
+                 gba::GbaPpu::kMaxRenderHeight);
++            if (opts.view_geometry) {
++                opts.view_geometry(&geometry, drawable_w, drawable_h);
++            }
          }
--        // INTEGER_SCALE is deliberately absent: HostWindow::adjust_scale only
-+        // INTEGER_SCALE is absent on desktop: HostWindow::adjust_scale only
-         // ever produces integer scales (clamped 1..8), so there is no
--        // fractional mode for a toggle to switch off. Offering one would
--        // advertise a choice the presentation path cannot make.
-+        // fractional mode for a toggle to switch off. Android's full-screen
-+        // layout does fill the display fractionally, so it offers the choice.
- #if !defined(__ANDROID__)
-         runtime_ui_config.features |=
-             RECOMP_RUNTIME_UI_STANDARD_FULLSCREEN |
-             RECOMP_RUNTIME_UI_STANDARD_WINDOW_SCALE;
- #else
-+        runtime_ui_config.features |= RECOMP_RUNTIME_UI_STANDARD_INTEGER_SCALE;
-         // A mobile game has no window to close and the system Back button is
-         // routed to the game, so the menu is the only clean way out: it ends
-         // the session (save flushed, no suspend state) and the Activity
-@@ -3446,6 +3509,32 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         fps_item.type        = RECOMP_RUNTIME_UI_BOOL;
-         runtime_ui_extras.push_back(fps_item);
- 
-+#if defined(__ANDROID__)
-+        RecompRuntimeUiItem fullscreen_item{};
-+        fullscreen_item.key = RECOMP_RUNTIME_UI_KEY_FULLSCREEN;
-+        fullscreen_item.section = "Display";
-+        fullscreen_item.label = "Hide system bars";
-+        fullscreen_item.description = "Hide Android system bars while playing.";
-+        fullscreen_item.type = RECOMP_RUNTIME_UI_BOOL;
-+        runtime_ui_extras.push_back(fullscreen_item);
-+
-+        RecompRuntimeUiItem fill_item{};
-+        fill_item.key = "gbarecomp.display.fill";
-+        fill_item.section = "Display";
-+        fill_item.label = "Fill display (stretch)";
-+        fill_item.description = "Stretch the original image to the display without repeating scenery.";
-+        fill_item.type = RECOMP_RUNTIME_UI_BOOL;
-+        runtime_ui_extras.push_back(fill_item);
-+
-+        RecompRuntimeUiItem touch_pad_item{};
-+        touch_pad_item.key = "gbarecomp.touch.pad_visible";
-+        touch_pad_item.section = "Display";
-+        touch_pad_item.label = "On-screen buttons";
-+        touch_pad_item.description = "Show or hide the touch gamepad overlay.";
-+        touch_pad_item.type = RECOMP_RUNTIME_UI_BOOL;
-+        runtime_ui_extras.push_back(touch_pad_item);
+         if (!request.native_view && opts.view_geometry)
+             opts.view_geometry(&geometry, drawable_w, drawable_h);
+@@ -4167,6 +4177,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
+     auto service_host_pause = [&]() {
+         bool waited = false;
+         while (!host_quit && args.window && (host_paused
++#if defined(GBARECOMP_RUNTIME_UI)
++                || (runtime_ui_context.ui && recomp_runtime_ui_is_open(runtime_ui_context.ui))
 +#endif
-+
-         if (opts.ui_extra_items && opts.ui_extra_item_count) {
-             const auto* game_items =
-                 static_cast<const RecompRuntimeUiItem*>(opts.ui_extra_items);
-@@ -3458,6 +3547,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         runtime_ui_context.ui =
-             recomp_runtime_ui_create_standard(&runtime_ui_config);
-         win.set_runtime_ui(runtime_ui_context.ui);
-+        if (opts.runtime_ui_font) win.set_runtime_ui_font(opts.runtime_ui_font);
+ #if defined(GBARECOMP_WEB_HOST)
+                 || win.auto_paused()
  #endif
-         sync_resize_driven_view();
-         if (live_fb.empty()) live_fb.assign(ppu.render_bytes(), 0);
-@@ -3533,7 +3623,6 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         return !opts.expose_assist_tools || win.assist_tools_enabled();
+@@ -4190,6 +4203,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
+ #else
+             // Keep the native window (and any runtime UI drawn over the
+             // game renderer) alive while the guest is held still.
++            if (sync_resize_driven_view()) {
++                ppu.render(live_fb.data(), bus.io().read16(0x000),
++                           bus.io().raw(), bus.vram_ptr(), bus.oam_ptr(),
++                           bus.pal_ptr());
++            }
+             present_live_frame();
+             std::this_thread::sleep_for(std::chrono::milliseconds(10));
  #endif
-     };
--    bool fast_forward_active = false;
-     int fast_forward_multiplier = std::clamp(
-         win.fast_forward_multiplier(), 2, 10);
-     auto capture_rewind_point = [&]() {
-@@ -4904,6 +4993,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-                 if (present_frame) present_live_frame();
-                 // Framedump (capture runs only) is attributed to present_us.
-                 if (framedump_dir && frame >= framedump_start &&
-+                    (frame - framedump_start) % framedump_stride == 0 &&
-                     framedump_written < framedump_max) {
-                     char p[512];
-                     std::snprintf(p, sizeof(p), "%s/f_%06llu.png", framedump_dir,
 diff --git a/src/runtime/runtime.h b/src/runtime/runtime.h
 index 7e086e4..7d534a0 100644
 --- a/src/runtime/runtime.h
@@ -2712,353 +3504,3 @@ index 3b5843e..35cb13a 100644
      test_sram_bus_width_and_region_mirroring();
      test_bios_undocumented_io_write();
      test_bios_window_writes_are_ignored();
-diff --git a/src/runtime/host_platform.h b/src/runtime/host_platform.h
---- a/src/runtime/host_platform.h
-+++ b/src/runtime/host_platform.h
-@@ -52,8 +52,11 @@ public:
-     // old behavior. Fast-forward presents one frame per wait already, so
-     // it is unaffected. The behind-resync below still bounds real stalls.
-     void wait_for_next_frame(uint64_t frames = 1);
--    // Block until halfway to the next deadline (no deadline change): the slot
--    // for an interpolated frame presented between two real ones.
-+    // Interpolated frames: wait_in_between() holds the in-between frame until a
-+    // fixed lead after the frame started (the slowest recent emulate+interpolate
-+    // time), and wait_half_frame() holds the real frame half a period after it,
-+    // so the two go out evenly spaced. Neither changes the deadline.
-+    void wait_in_between();
-     void wait_half_frame();
- 
-     // Realign the deadline to "now". Call after any non-real-time jump
-@@ -74,6 +77,7 @@ private:
-     // stays real-time on average (audio production would otherwise fall
-     // behind the host's audio clock) without a visibly short frame.
-     std::chrono::nanoseconds debt_{0};
-+    std::chrono::nanoseconds lead_{};  // in-between frame's offset into the frame
-     bool uncapped_ = false;
-     bool raised_timer_res_ = false;
-     // HP-002: Windows high-resolution waitable timer (HANDLE, void* here to
-diff --git a/src/runtime/host_platform.cpp b/src/runtime/host_platform.cpp
---- a/src/runtime/host_platform.cpp
-+++ b/src/runtime/host_platform.cpp
-@@ -112,9 +112,22 @@ void FramePacer::wait_for_next_frame(uint64_t frames) {
-     }
- }
- 
-+void FramePacer::wait_in_between() {
-+    if (uncapped_) return;
-+    // Presenting the in-between frame as soon as it was ready left a short gap
-+    // to the real one (6 of 16.7 ms), and on a 120 Hz display both landed in
-+    // one refresh, so only 60 fps showed. The lead jumps up to a slow frame
-+    // and eases back down 50 us per frame.
-+    const clock::time_point start = next_ - period_;
-+    const auto busy = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start);
-+    lead_ = std::clamp(std::max(busy + std::chrono::milliseconds(1), lead_ - std::chrono::microseconds(50)),
-+                       std::chrono::nanoseconds(0), period_ / 2 - std::chrono::microseconds(500));
-+    sleep_until_point(start + lead_);
-+}
-+
- void FramePacer::wait_half_frame() {
-     if (uncapped_) return;
--    const clock::time_point target = next_ - period_ / 2;
-+    const clock::time_point target = next_ - period_ / 2 + lead_;
-     if (clock::now() < target) sleep_until_point(target);
- }
- 
-diff --git a/src/runtime/runtime.cpp b/src/runtime/runtime.cpp
---- a/src/runtime/runtime.cpp
-+++ b/src/runtime/runtime.cpp
-@@ -3058,6 +3058,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-             interpolated_fb.resize(ppu.render_bytes() * 4u);
-             if (gba::g_present_interpolator(&ppu, live_fb.data(), ppu.render_width(),
-                                             ppu.render_height(), interpolated_fb.data())) {
-+                pacer->wait_in_between();
-                 win.present_scaled(interpolated_fb.data(), 2);
-                 pacer->wait_half_frame();
-             }
-diff --git a/src/runtime/host_platform.h b/src/runtime/host_platform.h
---- a/src/runtime/host_platform.h
-+++ b/src/runtime/host_platform.h
-@@ -52,12 +52,14 @@ public:
-     // old behavior. Fast-forward presents one frame per wait already, so
-     // it is unaffected. The behind-resync below still bounds real stalls.
-     void wait_for_next_frame(uint64_t frames = 1);
--    // Interpolated frames: wait_in_between() holds the in-between frame until a
--    // fixed lead after the frame started (the slowest recent emulate+interpolate
--    // time), and wait_half_frame() holds the real frame half a period after it,
--    // so the two go out evenly spaced. Neither changes the deadline.
--    void wait_in_between();
--    void wait_half_frame();
-+    // Smooth motion: when the previous frame should be fully on screen. It
-+    // trails this frame's start by the slowest recent emulate time plus 2 ms,
-+    // so the frames drawn between it and this one keep an even pace.
-+    std::chrono::steady_clock::time_point smooth_origin();
-+    std::chrono::steady_clock::time_point frame_start() const { return next_ - period_; }
-+    std::chrono::nanoseconds period() const { return period_; }
-+    // Sleep until `t` without moving the deadline. No-op while uncapped.
-+    void sleep_until(std::chrono::steady_clock::time_point t);
- 
-     // Realign the deadline to "now". Call after any non-real-time jump
-     // (startup, save-state load) so the pacer doesn't try to catch up.
-@@ -77,7 +79,7 @@ private:
-     // stays real-time on average (audio production would otherwise fall
-     // behind the host's audio clock) without a visibly short frame.
-     std::chrono::nanoseconds debt_{0};
--    std::chrono::nanoseconds lead_{};  // in-between frame's offset into the frame
-+    std::chrono::nanoseconds lead_{};  // smooth_origin()'s offset into the frame
-     bool uncapped_ = false;
-     bool raised_timer_res_ = false;
-     // HP-002: Windows high-resolution waitable timer (HANDLE, void* here to
-diff --git a/src/runtime/host_platform.cpp b/src/runtime/host_platform.cpp
---- a/src/runtime/host_platform.cpp
-+++ b/src/runtime/host_platform.cpp
-@@ -112,23 +112,20 @@ void FramePacer::wait_for_next_frame(uint64_t frames) {
-     }
- }
- 
--void FramePacer::wait_in_between() {
--    if (uncapped_) return;
--    // Presenting the in-between frame as soon as it was ready left a short gap
--    // to the real one (6 of 16.7 ms), and on a 120 Hz display both landed in
--    // one refresh, so only 60 fps showed. The lead jumps up to a slow frame
--    // and eases back down 50 us per frame.
-+FramePacer::clock::time_point FramePacer::smooth_origin() {
-+    // Presenting interpolated frames as soon as they were ready made the gap
-+    // to the next one shrink with the emulate time (6 of 8.4 ms), and on a
-+    // 120 Hz display two landed in one refresh, so only 60 fps showed. The
-+    // lead jumps up to a slow frame and eases back down 50 us per frame.
-     const clock::time_point start = next_ - period_;
-     const auto busy = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start);
--    lead_ = std::clamp(std::max(busy + std::chrono::milliseconds(1), lead_ - std::chrono::microseconds(50)),
--                       std::chrono::nanoseconds(0), period_ / 2 - std::chrono::microseconds(500));
--    sleep_until_point(start + lead_);
-+    lead_ = std::clamp(std::max(busy + std::chrono::milliseconds(2), lead_ - std::chrono::microseconds(50)),
-+                       std::chrono::nanoseconds(0), period_ / 2);
-+    return start + lead_;
- }
- 
--void FramePacer::wait_half_frame() {
--    if (uncapped_) return;
--    const clock::time_point target = next_ - period_ / 2 + lead_;
--    if (clock::now() < target) sleep_until_point(target);
-+void FramePacer::sleep_until(clock::time_point t) {
-+    if (!uncapped_ && clock::now() < t) sleep_until_point(t);
- }
- 
- void FramePacer::sleep_until_point(clock::time_point target) {
-diff --git a/src/runtime/runtime.cpp b/src/runtime/runtime.cpp
---- a/src/runtime/runtime.cpp
-+++ b/src/runtime/runtime.cpp
-@@ -3043,9 +3043,55 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-     std::optional<FramePacer> pacer;
-     bool fast_forward_active = false;
-     // Smooth motion: a game that installs gba::g_present_interpolator gets an
--    // interpolated frame presented half a period before each paced real one.
-+    // interpolated frame on every display refresh between its real frames.
-     // Native presentation only; the high-resolution surface is presented as is.
-     std::vector<uint8_t> interpolated_fb;
-+    // One present per display refresh, early in the refresh before the one it
-+    // is for, so each lands in its own refresh. It shows the moment that far
-+    // from the previous frame (fully shown at smooth_origin()) to this one. A
-+    // refresh whose present would fall after the next frame's deadline, or
-+    // that needs the next frame, is left for the next call.
-+    std::chrono::steady_clock::time_point smooth_slot{};  // next refresh not yet presented
-+    bool smooth_on = false;                               // the game's last answer
-+    auto present_smooth = [&]() -> bool {
-+        using clock = std::chrono::steady_clock;
-+        const auto frame = pacer->period();
-+        const clock::time_point origin = pacer->smooth_origin();
-+        const clock::time_point deadline = pacer->frame_start() + frame;
-+        interpolated_fb.resize(ppu.render_bytes() * 4u);
-+        const uint32_t w = ppu.render_width(), h = ppu.render_height();
-+        if (!smooth_on && !(smooth_on = gba::g_present_interpolator(&ppu, live_fb.data(), w, h,
-+                                                                    interpolated_fb.data(), 0.5f) != 0))
-+            return false;
-+        std::chrono::nanoseconds refresh{};
-+        clock::time_point vblank{};
-+        if (!win.display_timing(&refresh, &vblank) || refresh < std::chrono::milliseconds(2))
-+            refresh = frame / 2;
-+        const clock::time_point now = clock::now();
-+        if (vblank == clock::time_point{}) vblank = smooth_slot != clock::time_point{} ? smooth_slot : now;
-+        clock::time_point slot = vblank + ((std::max(smooth_slot, now) - vblank) / refresh) * refresh;
-+        while (slot <= now || slot < smooth_slot - refresh / 2) slot += refresh;
-+        constexpr auto kEarly = std::chrono::milliseconds(1);
-+        for (;; slot += refresh) {
-+            const clock::time_point at = std::max(slot - refresh + kEarly, clock::now());
-+            if (at > deadline || slot > origin + frame) break;
-+            pacer->sleep_until(at);
-+            if (clock::now() >= slot) continue;  // missed this refresh
-+            const float t = std::chrono::duration<float>(slot - origin) / std::chrono::duration<float>(frame);
-+            if (t >= 0.999f) {
-+                win.present(live_fb.data());
-+            } else if (gba::g_present_interpolator(&ppu, live_fb.data(), w, h, interpolated_fb.data(),
-+                                                   std::max(t, 0.0f))) {
-+                win.present_scaled(interpolated_fb.data(), 2);
-+            } else {
-+                smooth_on = false;
-+                win.present(live_fb.data());
-+                break;
-+            }
-+        }
-+        smooth_slot = slot;
-+        return true;
-+    };
-     auto present_live_frame = [&]() {
-         ppu.set_internal_resolution(args.internal_resolution, opts.high_resolution_affine_provider);
-         if (const auto* pixels = ppu.high_resolution_framebuffer()) {
-@@ -3054,15 +3100,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-             ++high_resolution_presented;
-             return;
-         }
--        if (gba::g_present_interpolator && pacer && !pacer->uncapped() && !fast_forward_active) {
--            interpolated_fb.resize(ppu.render_bytes() * 4u);
--            if (gba::g_present_interpolator(&ppu, live_fb.data(), ppu.render_width(),
--                                            ppu.render_height(), interpolated_fb.data())) {
--                pacer->wait_in_between();
--                win.present_scaled(interpolated_fb.data(), 2);
--                pacer->wait_half_frame();
--            }
--        }
-+        if (gba::g_present_interpolator && pacer && !pacer->uncapped() && !fast_forward_active &&
-+            present_smooth())
-+            return;
-         win.present(live_fb.data());
-     };
-     auto apply_runtime_view_geometry = [&](ViewGeometry geometry) -> bool {
-diff --git a/src/runtime/host_window.h b/src/runtime/host_window.h
---- a/src/runtime/host_window.h
-+++ b/src/runtime/host_window.h
-@@ -23,6 +23,7 @@
- 
- #pragma once
- 
-+#include <chrono>
- #include <cstddef>
- #include <cstdint>
- 
-@@ -175,6 +176,11 @@ public:
-     // same destination; smooth motion's interpolated frames use 2 for
-     // half-pixel motion.
-     void present_scaled(const uint8_t* rgb888, int factor);
-+    // Refresh period of the window's display, and (Windows compositor only)
-+    // when its latest vblank was; `vblank` is left alone when unknown.
-+    // Returns false when the period is unknown.
-+    bool display_timing(std::chrono::nanoseconds* period,
-+                        std::chrono::steady_clock::time_point* vblank) const;
- 
-     // Push `count` int16_t mono samples assuming the engine's 65.536 kHz
-     // source rate. Prefer push_audio_block when the caller knows the real
-diff --git a/src/runtime/host_window.cpp b/src/runtime/host_window.cpp
---- a/src/runtime/host_window.cpp
-+++ b/src/runtime/host_window.cpp
-@@ -2512,6 +2512,43 @@ bool HostWindow::drawable_size(int* width, int* height) const {
- 
- void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
- 
-+bool HostWindow::display_timing(std::chrono::nanoseconds* period,
-+                                std::chrono::steady_clock::time_point* vblank) const {
-+    if (!open_ || !impl_ || !period || !vblank) return false;
-+    auto* b = static_cast<Backend*>(impl_);
-+    SDL_DisplayMode mode{};
-+    const int index = SDL_GetWindowDisplayIndex(b->window);
-+    const int hz = SDL_GetCurrentDisplayMode(index < 0 ? 0 : index, &mode) == 0 ? mode.refresh_rate : 0;
-+    if (hz <= 0) return false;
-+    *period = std::chrono::nanoseconds(1000000000LL / hz);
-+#if defined(_WIN32)
-+    // The compositor's clock gives the vblank phase. It times one display, so
-+    // it is only used when its rate matches the window's display.
-+    using Gcti = HRESULT (WINAPI*)(HWND, DWM_TIMING_INFO*);
-+    static const Gcti gcti = [] {
-+        HMODULE m = LoadLibraryA("dwmapi.dll");
-+        return m ? reinterpret_cast<Gcti>(reinterpret_cast<void*>(GetProcAddress(m, "DwmGetCompositionTimingInfo")))
-+                 : nullptr;
-+    }();
-+    DWM_TIMING_INFO ti{};
-+    ti.cbSize = sizeof(ti);
-+    LARGE_INTEGER freq{}, qpc{};
-+    if (gcti && SUCCEEDED(gcti(nullptr, &ti)) && ti.qpcRefreshPeriod && QueryPerformanceFrequency(&freq) &&
-+        QueryPerformanceCounter(&qpc)) {
-+        const auto now = std::chrono::steady_clock::now();
-+        auto ns = [&](long long q) {
-+            return std::chrono::nanoseconds(static_cast<long long>(static_cast<double>(q) * 1e9 / freq.QuadPart));
-+        };
-+        const auto dwm = ns(static_cast<long long>(ti.qpcRefreshPeriod));
-+        if (std::abs((dwm - *period).count()) * 20 < period->count()) {  // within 5%
-+            *period = dwm;
-+            *vblank = now - ns(static_cast<long long>(qpc.QuadPart - ti.qpcVBlank));
-+        }
-+    }
-+#endif
-+    return true;
-+}
-+
- void HostWindow::present_scaled(const uint8_t* rgb888, int factor) {
-     if (!open_ || !impl_ || (factor != 1 && factor != 2)) return;
-     auto* b = static_cast<Backend*>(impl_);
-@@ -3638,6 +3675,9 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
- void HostWindow::present(const uint8_t* /*rgb888*/) {}
- void HostWindow::present(const uint8_t*, unsigned, unsigned) {}
- void HostWindow::present_scaled(const uint8_t*, int) {}
-+bool HostWindow::display_timing(std::chrono::nanoseconds*, std::chrono::steady_clock::time_point*) const {
-+    return false;
-+}
- 
- void HostWindow::load_input_config(const char* /*dir*/,
-                                    bool /*assist_tools_default*/,
-diff --git a/src/runtime/host_window_web.cpp b/src/runtime/host_window_web.cpp
---- a/src/runtime/host_window_web.cpp
-+++ b/src/runtime/host_window_web.cpp
-@@ -322,6 +322,9 @@ bool HostWindow::drawable_size(int* w,int* h) const { if(!impl_||!w||!h)return f
- void HostWindow::present_scaled(const uint8_t* rgb, int factor) {
-     if (factor == 1) present(rgb);
- }
-+bool HostWindow::display_timing(std::chrono::nanoseconds*, std::chrono::steady_clock::time_point*) const {
-+    return false;
-+}
- void HostWindow::set_fill_display(bool) {}
- bool HostWindow::fill_display() const { return false; }
- 
-diff --git a/src/gba/gba_ppu.h b/src/gba/gba_ppu.h
---- a/src/gba/gba_ppu.h
-+++ b/src/gba/gba_ppu.h
-@@ -347,12 +347,13 @@ extern "C" int g_ws_obj_native_clip;
- 
- // Present-time frame interpolation (host-only, default off). While
- // g_ppu_record_motion is nonzero the PPU keeps the motion record above. A
--// runtime with g_present_interpolator set calls it with each finished frame
--// before presenting; returning nonzero means out2x now holds a (2w x 2h RGB888)
--// frame for half a frame period earlier, which is presented first.
-+// runtime with g_present_interpolator set calls it once per display refresh
-+// with the newest finished frame and how far (0 <= t < 1) the moment shown
-+// lies from the previous frame to it; returning nonzero means out2x now holds
-+// that moment as a (2w x 2h RGB888) frame. Zero means no smooth motion now.
- extern "C" int g_ppu_record_motion;
- extern "C" int (*g_present_interpolator)(const GbaPpu* ppu, const uint8_t* rgb,
--                                         uint32_t w, uint32_t h, uint8_t* out2x);
-+                                         uint32_t w, uint32_t h, uint8_t* out2x, float t);
- 
- // Read-only, game-authored OBJ coverage for expanded margins. RGB555 bit 15
- // marks a transparent pixel. Priority uses the hardware 0..3 BG/OBJ order.
-diff --git a/src/gba/gba_ppu.cpp b/src/gba/gba_ppu.cpp
---- a/src/gba/gba_ppu.cpp
-+++ b/src/gba/gba_ppu.cpp
-@@ -61,7 +61,7 @@ extern "C" int (*g_ws_obj_attr_y_provider)(int, std::uint16_t,
- extern "C" const WsMarginObjPixel* (*g_ws_obj_margin_provider)(int, int*, int*) = nullptr;
- extern "C" int g_ppu_record_motion = 0;
- extern "C" int (*g_present_interpolator)(const GbaPpu*, const uint8_t*, uint32_t, uint32_t,
--                                         uint8_t*) = nullptr;
-+                                         uint8_t*, float) = nullptr;
- 
- namespace {
- 
-diff --git a/src/runtime/runtime.cpp b/src/runtime/runtime.cpp
---- a/src/runtime/runtime.cpp
-+++ b/src/runtime/runtime.cpp
-@@ -1943,7 +1943,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
-         bus.audio().shadow_hook_pcs(g_runtime_observed_pcs,
-                                     RUNTIME_MAX_OBSERVED_PCS));
-     g_runtime_dispatch_observer = g_runtime_observed_pc_count
--        ? [](uint32_t pc, int thumb) {
-+        ? +[](uint32_t pc, int thumb) {  // + : GCC 11 won't pick a common type with nullptr
-               if (gba::GbaBus* b = gbarecomp::active_bus())
-                   b->audio().shadow_driver_tick(pc, thumb != 0);
-           }

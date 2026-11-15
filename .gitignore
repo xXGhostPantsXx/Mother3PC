@@ -65,3 +65,15 @@ build-android-host/
 # Pinned by dependencies.lock.json, fetched by tools/setup_deps.py
 third_party/rcheevos/
 /third_party/rcheevos/
+
+# macOS / iOS builds and local archives
+build-macos/
+build-ios/
+mac_deps/
+mac_deps.tar.gz
+rom/
+roms/
+bios/
+*.ipa
+discord_auth.ini
+discord_session.ini

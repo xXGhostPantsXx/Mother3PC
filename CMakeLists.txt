@@ -25,6 +25,12 @@ endif()
 if(ANDROID)
     set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
 endif()
+if(APPLE)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_TEST OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${GBARECOMP_ROOT}/platform/android/third_party/SDL" sdl2_build EXCLUDE_FROM_ALL)
+endif()
 add_subdirectory("${GBARECOMP_ROOT}" gbarecomp_build EXCLUDE_FROM_ALL)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/recompiled.cpp")
     message(FATAL_ERROR
@@ -64,6 +70,24 @@ if(ANDROID)
 else()
     set(MOTHER3_TARGET Mother3Recomp)
     add_executable(Mother3Recomp ${MOTHER3_SOURCES})
+endif()
+if(IOS)
+    target_link_libraries(${MOTHER3_TARGET} PRIVATE SDL2::SDL2main)
+    set_target_properties(${MOTHER3_TARGET} PROPERTIES
+        MACOSX_BUNDLE_BUNDLE_NAME "Mother3Recomp"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.xandercheadle.mother3recomp"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Mother3iOSInfo.plist"
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "YES"
+        XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "YCDBN3R578"
+    )
+    add_custom_command(TARGET ${MOTHER3_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/ios_payload" "$<TARGET_BUNDLE_CONTENT_DIR:${MOTHER3_TARGET}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_BUNDLE_CONTENT_DIR:${MOTHER3_TARGET}>/assets"
+    )
 endif()
 
 # A native game corpus without the recompiled BIOS runs the IRQ/SWI handlers on
@@ -188,6 +212,8 @@ if(GBAGAME_RECOMP_UI)
     if(ANDROID)
         # Linked into libmain.so; the Android shell already defines SDL2::SDL2.
         set_target_properties(game_launcher_ui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    elseif(TARGET SDL2::SDL2)
+        # Linked against bundled SDL2 source target (macOS / iOS)
     else()
         find_package(SDL2 REQUIRED)
     endif()

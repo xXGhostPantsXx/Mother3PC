@@ -24,7 +24,9 @@
 #include "m3_mouse.h"
 #include "m3_presence.h"
 #include "recomp_runtime_ui.h"
+#if !defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
 #define SDL_MAIN_HANDLED
+#endif
 #include <SDL.h>
 #include <cstring>
 #if defined(MOTHER3_RETROACHIEVEMENTS)

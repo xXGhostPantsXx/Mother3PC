@@ -1,3 +1,26 @@
+diff --git a/recomp_ui.cmake b/recomp_ui.cmake
+index 079d241..24800dd 100644
+--- a/recomp_ui.cmake
++++ b/recomp_ui.cmake
+@@ -227,7 +227,7 @@ function(recomp_target_launcher_ui TGT)
+     elseif(RECOMP_UI_LANGUAGE)
+         recomp_target_launcher_language(${TGT} "${RECOMP_UI_LANGUAGE}")
+     endif()
+-    if(ANDROID)
++    if(ANDROID OR IOS)
+         target_compile_definitions(${TGT} PRIVATE
+             LNG_GLES2=1
+             IMGUI_IMPL_OPENGL_ES2=1)
+@@ -253,6 +253,9 @@ function(recomp_target_launcher_ui TGT)
+         find_library(RUI_LOG_LIBRARY log REQUIRED)
+         target_link_libraries(${TGT} PRIVATE
+             ${RUI_GLES2_LIBRARY} ${RUI_EGL_LIBRARY} ${RUI_LOG_LIBRARY})
++    elseif(IOS)
++        find_library(RUI_OPENGLES_FRAMEWORK OpenGLES REQUIRED)
++        target_link_libraries(${TGT} PRIVATE ${RUI_OPENGLES_FRAMEWORK})
+     elseif(WIN32)
+         # ws2_32: launcher_udp_port.c exclusive UDP bind probes for host lobby.
+         target_link_libraries(${TGT} PRIVATE opengl32 ws2_32)
 diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/imgui/launcher_imgui.cpp
 index cbae6e9..8597c2f 100644
 --- a/src/common/backends/imgui/launcher_imgui.cpp
@@ -373,6 +396,19 @@ index 1e7fc30..04ce112 100644
  bool launcher_model_can_launch(const LauncherModel* m);
  // True when the mounted disc is OK for online (TOC/cue policy + content).
  // Non-disc games (verify.mode!=1) always return true when netplay is supported.
+diff --git a/src/common/launcher_sdlcompat.h b/src/common/launcher_sdlcompat.h
+index 597ee10..467bb0a 100644
+--- a/src/common/launcher_sdlcompat.h
++++ b/src/common/launcher_sdlcompat.h
+@@ -12,7 +12,7 @@
+ // ---- map SDL3 spellings onto SDL2 -----------------------------------------
+ 
+ // GL header (Android uses GLES; desktop SDL2 uses the system OpenGL header).
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(LNG_GLES2)
+ #include <SDL_opengles2.h>
+ #else
+ #include <SDL_opengl.h>
 diff --git a/src/common/launcher_theme.h b/src/common/launcher_theme.h
 index 317e920..7f21d74 100644
 --- a/src/common/launcher_theme.h
@@ -418,6 +454,24 @@ index 317e920..7f21d74 100644
      if (name && (name[0] == 'p' || name[0] == 'P') &&
          (name[1] == 's' || name[1] == 'S'))
          return launcher_theme_psx();
+diff --git a/src/consoles/gba/gba_pad_binds.h b/src/consoles/gba/gba_pad_binds.h
+new file mode 100644
+index 0000000..cb8ec44
+--- /dev/null
++++ b/src/consoles/gba/gba_pad_binds.h
+@@ -0,0 +1,12 @@
++#pragma once
++#include "pad_binds.h"
++static const char* const kGbaPadKeys[] = {
++    "up", "down", "left", "right", "a", "b", "l", "r", "start", "select"
++};
++static const char* const kGbaPadDefaults[] = {
++    "dpup", "dpdown", "dpleft", "dpright", "a", "b",
++    "leftshoulder", "rightshoulder", "start", "back"
++};
++static const RuiPadSpec kGbaPadSpec = {
++    kGbaPadKeys, kGbaPadDefaults, 10, 4, 15, 0, NULL, NULL, 0
++};
 diff --git a/src/consoles/gba/gba_profile.h b/src/consoles/gba/gba_profile.h
 index 3eff430..dfbe27b 100644
 --- a/src/consoles/gba/gba_profile.h
@@ -474,21 +528,3 @@ index d1021a7..5d74307 100644
  
      /* ---- multi-image titles (appended additively) ------------------------
       * The roster of discs this build was made from, in disc order. When
-diff --git a/src/consoles/gba/gba_pad_binds.h b/src/consoles/gba/gba_pad_binds.h
-new file mode 100644
-index 0000000..cb8ec44
---- /dev/null
-+++ b/src/consoles/gba/gba_pad_binds.h
-@@ -0,0 +1,12 @@
-+#pragma once
-+#include "pad_binds.h"
-+static const char* const kGbaPadKeys[] = {
-+    "up", "down", "left", "right", "a", "b", "l", "r", "start", "select"
-+};
-+static const char* const kGbaPadDefaults[] = {
-+    "dpup", "dpdown", "dpleft", "dpright", "a", "b",
-+    "leftshoulder", "rightshoulder", "start", "back"
-+};
-+static const RuiPadSpec kGbaPadSpec = {
-+    kGbaPadKeys, kGbaPadDefaults, 10, 4, 15, 0, NULL, NULL, 0
-+};
