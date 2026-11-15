@@ -9,11 +9,11 @@ YOU HAVE to provide your own gba.bin and rom! (seems like the best way to do it 
 
 | Platform | Version | Download |
 | --- | --- | --- |
-| Windows x64 | 2.0.0 | [Windows ZIP](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-windows-x64.zip) |
-| Linux x86_64 / Steam Deck | 2.0.0 | [Linux archive](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-linux-x86_64.tar.gz) |
-| Android (ARM64 and x86_64) | 2.0.0 | [Android APK](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
-| MacOS | 2.0.0 | [Mac file](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
-| IOS (15 or higher) | 2.0.0 | [IOS IPA](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
+| Windows x64 | 2.0.0 | [Windows ZIP]([https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-windows-x64.zip](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Windows-x64.zip)) |
+| Linux x86_64 / Steam Deck | 2.0.0 | [Linux archive](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Linux-x86_64.zip) |
+| Android (ARM64 and x86_64) | 2.0.0 | [Android APK]([https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk]https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-Android.apk) |
+| MacOS | 2.0.0 | [Mac file](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-macOS.zip) |
+| IOS (15 or higher) | 2.0.0 | [IOS IPA]([https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk]https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.0/Mother3Recomp-iOS.ipa) |
 
 **v2.0.0:** Fixed the issues regarding audio and refresh rate. Added new options to the launcher for the ability to detect and automatically update your game! More patch notes are added within the launcher itself.
 
@@ -34,15 +34,14 @@ YOU HAVE to provide your own gba.bin and rom! (seems like the best way to do it 
 
 | MOTHER 3's own launcher | Widescreen in Tazmily |
 | --- | --- |
-| ![The launcher: the party walks through the crossroads outside Tazmily](docs/screenshots/launcher.png) | ![Tazmily in 16:9](docs/screenshots/widescreen-tazmily.png) |
-| **Settings** | **Controls** |
-| ![Launcher settings](docs/screenshots/launcher-settings.png) | ![Launcher controls](docs/screenshots/launcher-controls.png) |
+| ![Updated Launcher](docs/screenshots/updatedlauncher.png) | ![Camera 1.25x Zoom](docs/screenshots/1.25xcamera.png) |
+| --- | --- |
+| ![Launcher Auto-Update](docs/screenshots/launcher-settings.png) | ![Launcher controls](docs/screenshots/launcher-controls.png) |
 | **Widescreen fields** | **Widescreen rooms** |
-| ![A field in 16:9](docs/screenshots/widescreen-field.png) | ![A room in 16:9](docs/screenshots/widescreen-interior.png) |
-| **Widescreen battles** | **Widescreen cutscenes** |
-| ![A battle in 16:9](docs/screenshots/widescreen-battle.png) | ![The opening in 16:9](docs/screenshots/widescreen-opening.png) |
+| ![A field in 16:9](docs/screenshots/autoupdatelauncher.png) | ![Room With 1.25x Camera](docs/screenshots/1.25xinside.png) |
+| --- | --- |
+| ![Battle No Black Bars 1.25x](docs/screenshots/1.25xcamerabattle.png) | ![1.5x Camera Battle](docs/screenshots/1.5xcamerabattle.png) |
 
-Everything in these pictures is drawn from the player's own ROM; none of it ships with the download.
 
 ## Instructions
 
