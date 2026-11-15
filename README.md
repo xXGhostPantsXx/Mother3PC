@@ -10,8 +10,10 @@ YOU HAVE to provide your own gba.bin and rom! (seems like the best way to do it 
 | Platform | Version | Download |
 | --- | --- | --- |
 | Windows x64 | 2.0.0 | [Windows ZIP](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-windows-x64.zip) |
-| Linux x86_64 / Steam Deck | 1.0.8 | [Linux archive](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-linux-x86_64.tar.gz) |
-| Android (ARM64 and x86_64) | 1.0.8 | [Android APK](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
+| Linux x86_64 / Steam Deck | 2.0.0 | [Linux archive](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-linux-x86_64.tar.gz) |
+| Android (ARM64 and x86_64) | 2.0.0 | [Android APK](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
+| MacOS | 2.0.0 | [Mac file](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
+| IOS (15 or higher) | 2.0.0 | [IOS IPA](https://github.com/josiahg2502-glitch/Mother3Recomp/releases/download/v1.0.8/Mother3Recomp-v1.0.8-android.apk) |
 
 **v2.0.0:** Fixed the issues regarding audio and refresh rate. Added new options to the launcher for the ability to detect and automatically update your game! More patch notes are added within the launcher itself.
 
