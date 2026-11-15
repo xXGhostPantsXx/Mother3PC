@@ -104,7 +104,19 @@ endif()
 
 # Embed only the HQ mixer code; the ROM itself is patched in memory after the
 # user's selected language patch has been applied.
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/mods/High-Quality Sound Mixing/source/m4a_hq_mixer_no_fix.bin" HQ_AUDIO_MIXER_HEX HEX)
+set(HQ_MIXER_BIN "${CMAKE_CURRENT_SOURCE_DIR}/mods/High-Quality Sound Mixing/source/m4a_hq_mixer_no_fix.bin")
+if(NOT EXISTS "${HQ_MIXER_BIN}")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_hq_mixer.py"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE _hq_res
+    )
+    if(NOT _hq_res EQUAL 0)
+        message(FATAL_ERROR "Failed to extract ${HQ_MIXER_BIN}")
+    endif()
+endif()
+file(READ "${HQ_MIXER_BIN}" HQ_AUDIO_MIXER_HEX HEX)
 string(REGEX REPLACE "(..)" "0x\\1," HQ_AUDIO_MIXER_BYTES "${HQ_AUDIO_MIXER_HEX}")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/hq_audio_mixer_data.h"

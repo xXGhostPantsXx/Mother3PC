@@ -1,0 +1,34 @@
+name: Build Linux Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build libsdl2-dev libgl-dev pkg-config python3 patchelf
+
+      - name: Build Mother3Recomp (Linux x86_64)
+        run: |
+          sed -i 's/\r$//' tools/*.sh
+          bash tools/build_linux.sh
+
+      - name: Package clean Linux release archive
+        run: |
+          mkdir -p stage/Mother3Recomp-Linux/bios stage/Mother3Recomp-Linux/roms stage/Mother3Recomp-Linux/saves
+          cp Mother3Recomp game.toml LICENSE CREDITS.md README.md stage/Mother3Recomp-Linux/
+          [ -f Mother3Recomp.desktop ] && cp Mother3Recomp.desktop stage/Mother3Recomp-Linux/ || true
+          cp -R assets config patches stage/Mother3Recomp-Linux/
+          (cd stage && tar -czf ../Mother3Recomp-Linux-x86_64.tar.gz Mother3Recomp-Linux)
+
+      - name: Upload Linux release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-Linux-x86_64
+          path: Mother3Recomp-Linux-x86_64.tar.gz
