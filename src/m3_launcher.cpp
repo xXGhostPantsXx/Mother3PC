@@ -1,3 +1,4 @@
+#include <fstream>
 #include "m3_launcher.h"
 
 #include "m3_mods.h"
@@ -202,6 +203,9 @@ std::string pad_name(const std::string& src, SDL_GameControllerType type) {
         {"x", "X", "Square", "Y"},         {"y", "Y", "Triangle", "X"},
         {"leftshoulder", "LB", "L1", "L"}, {"rightshoulder", "RB", "R1", "R"},
         {"lefttrigger", "LT", "L2", "ZL"}, {"righttrigger", "RT", "R2", "ZR"},
+        {"lefttrigger+", "LT", "L2", "ZL"}, {"righttrigger+", "RT", "R2", "ZR"},
+        {"triggerleft", "LT", "L2", "ZL"}, {"triggerright", "RT", "R2", "ZR"},
+        {"triggerleft+", "LT", "L2", "ZL"}, {"triggerright+", "RT", "R2", "ZR"},
         {"back", "View", "Share", "-"},    {"start", "Menu", "Options", "+"},
         {"guide", "Xbox", "PS", "Home"},   {"leftstick", "LS", "L3", "LS"},
         {"rightstick", "RS", "R3", "RS"},  {"dpup", "D-Up", "D-Up", "D-Up"},
@@ -216,6 +220,29 @@ std::string pad_name(const std::string& src, SDL_GameControllerType type) {
     for (const Row& r : kRows)
         if (src == r.sdl) return ps ? r.playstation : nin ? r.nintendo : r.xbox;
     return src.empty() ? "-" : src;
+}
+
+std::string assist_pad_label(int binding, SDL_GameControllerType type) {
+    if (binding <= 0) return "-";
+    if (binding < 100) {
+        const char* s = SDL_GameControllerGetStringForButton(static_cast<SDL_GameControllerButton>(binding - 1));
+        return pad_name(s ? s : "", type);
+    }
+    const int encoded = binding - 100;
+    const int code = encoded / 2;
+    const bool pos = (encoded & 1) != 0;
+    const char* ax = SDL_GameControllerGetStringForAxis(static_cast<SDL_GameControllerAxis>(code));
+    if (!ax) return "-";
+    std::string raw = ax;
+    if (code != SDL_CONTROLLER_AXIS_TRIGGERLEFT && code != SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
+        raw += pos ? "+" : "-";
+    return pad_name(raw, type);
+}
+
+std::string assist_key_label(int sc) {
+    if (sc <= 0 || sc >= SDL_NUM_SCANCODES) return "-";
+    const char* name = SDL_GetScancodeName(static_cast<SDL_Scancode>(sc));
+    return (name && *name) ? name : "-";
 }
 
 // Gamepad binds live in input.ini through recomp-ui's per-controller store.
@@ -240,8 +267,31 @@ struct Pads {
         rui_pad_binds_label(&kGbaPadSpec, path.c_str(), guid.c_str(), b, out, sizeof out);
         return pad_name(out, type);
     }
+    void write_guid_header() const {
+        if (guid.empty() || path.empty()) return;
+        std::vector<std::string> lines;
+        {
+            std::ifstream in(path);
+            std::string line;
+            bool in_ctrl = false;
+            while (std::getline(in, line)) {
+                while (!line.empty() && line.back() == '\r') line.pop_back();
+                const size_t st = line.find_first_not_of(" \t");
+                if (st != std::string::npos && line[st] == '[')
+                    in_ctrl = (line.compare(st, 12, "[controller]") == 0);
+                if (in_ctrl) continue;
+                lines.push_back(line);
+            }
+        }
+        while (!lines.empty() && lines.back().empty()) lines.pop_back();
+        std::ofstream out(path, std::ios::trunc);
+        if (!out) return;
+        out << "[controller]\nguid = " << guid << "\n";
+        for (const auto& l : lines) out << l << "\n";
+    }
     void set(int b, int kind, int code, int dir) {
         rui_pad_binds_set(&kGbaPadSpec, path.c_str(), guid.c_str(), b, kind, code, dir);
+        write_guid_header();
     }
     void reset() { rui_pad_binds_reset(&kGbaPadSpec, path.c_str(), guid.c_str()); }
 #else
@@ -256,7 +306,7 @@ enum class Page { Main, Settings, Controls, Mods, Account, Updates };
 const char* const kItems[] = {"Play", "Settings", "Controls", "Mods", "Account", "Quit"};
 constexpr int kItemCount = 6;
 constexpr int kSettingRows = 12;  // 10 options + Import a save + Change game files
-constexpr int kControlRows = m3settings::kButtonCount + 1;  // buttons + Reset
+constexpr int kControlRows = m3settings::kButtonCount + 3;  // buttons + Reset
 
 // Smooth motion only shows on a display of 100 Hz or more (m3_smooth.cpp).
 int display_hz(SDL_Window* win) {
@@ -617,18 +667,33 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
                 continue;
             }
 
-            if (capturing) {  // a key rebinds the keyboard, a button the controller; Escape cancels
+            if (capturing) {  // a key rebinds the keyboard, a button/trigger the controller; Escape cancels
                 const int b = row;
+                const bool is_assist = (b >= m3settings::kButtonCount && b < m3settings::kButtonCount + 2);
+                const int a_idx = b - m3settings::kButtonCount;
                 if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                    if (e.key.keysym.scancode != SDL_SCANCODE_ESCAPE)
-                        st.keys[b] = SDL_GetScancodeName(e.key.keysym.scancode);
+                    if (e.key.keysym.scancode != SDL_SCANCODE_ESCAPE) {
+                        if (is_assist) st.assist_keys[a_idx] = static_cast<int>(e.key.keysym.scancode);
+                        else st.keys[b] = SDL_GetScancodeName(e.key.keysym.scancode);
+                    }
                     capturing = false;
                 } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
-                    pads.set(b, 1, e.cbutton.button, 0);
+                    if (is_assist) st.assist_pads[a_idx] = e.cbutton.button + 1;
+                    else pads.set(b, 1, e.cbutton.button, 0);
                     capturing = false;
-                } else if (e.type == SDL_CONTROLLERAXISMOTION && std::abs(e.caxis.value) > 20000) {
-                    pads.set(b, 2, e.caxis.axis, e.caxis.value < 0 ? -1 : 1);
-                    capturing = false;
+                } else if (e.type == SDL_CONTROLLERAXISMOTION) {
+                    const bool is_trigger = (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ||
+                                             e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+                    const int val = is_trigger ? e.caxis.value : std::abs(e.caxis.value);
+                    if (val > 20000) {
+                        if (is_assist) {
+                            const bool pos = is_trigger ? true : (e.caxis.value > 0);
+                            st.assist_pads[a_idx] = 100 + e.caxis.axis * 2 + (pos ? 1 : 0);
+                        } else {
+                            pads.set(b, 2, e.caxis.axis, is_trigger ? 1 : (e.caxis.value < 0 ? -1 : 1));
+                        }
+                        capturing = false;
+                    }
                 }
                 continue;
             }
@@ -691,7 +756,10 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
                     if (in == Input::Down) row = (row + 1) % kControlRows;
                     if (in == Input::Back) leave_page();
                     else if (in == Input::Confirm && row == kControlRows - 1) {
-                        st.keys = m3settings::defaults().keys;
+                        const auto def = m3settings::defaults();
+                        st.keys = def.keys;
+                        st.assist_keys = def.assist_keys;
+                        st.assist_pads = def.assist_pads;
                         pads.reset();
                     } else if (in == Input::Confirm) capturing = true;
                     break;
@@ -856,18 +924,27 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
             ui.text("GBA", kLabelX, kPy + 4, kDim);
             ui.text("Keyboard", key_x, kPy + 4, kDim);
             ui.text(pads.available() ? "Controller" : "No controller", pad_x, kPy + 4, kDim);
+            static const char* const kAssistLabels[2] = {"Rewind", "Fast-Forward"};
             for (int i = 0; i < kControlRows; ++i) {
-                const int y = kPy + 16 + i * 10;
+                const int y = kPy + 14 + i * 9;
                 const std::uint32_t c = i == row ? kHot : kInk;
                 if (i == row) ui.cursor(kLabelX - 10, y + 4);
                 if (i == kControlRows - 1) { ui.text("Reset all to defaults", kLabelX, y, c); continue; }
+                if (i >= m3settings::kButtonCount) {
+                    const int a_idx = i - m3settings::kButtonCount;
+                    ui.text(kAssistLabels[a_idx], kLabelX, y, c);
+                    if (capturing && i == row) { ui.text("Press a key or button...", key_x, y, kHot); continue; }
+                    ui.text(assist_key_label(st.assist_keys[a_idx]), key_x, y, c);
+                    ui.text(pads.available() ? assist_pad_label(st.assist_pads[a_idx], pads.type) : "-", pad_x, y, c);
+                    continue;
+                }
                 ui.text(m3settings::kButtonLabels[i], kLabelX, y, c);
                 if (capturing && i == row) { ui.text("Press a key or button...", key_x, y, kHot); continue; }
                 ui.text(st.keys[i], key_x, y, c);
                 ui.text(pads.available() ? pads.label(i) : "-", pad_x, y, c);
             }
             // The runtime reads the left stick directly, so it isn't a bind.
-            ui.text_right("Left stick always moves", kRight, kPy + 16 + (kControlRows - 1) * 10, kDim);
+            ui.text_right("Left stick always moves", kRight, kPy + 14 + (kControlRows - 1) * 9, kDim);
             ui.text(capturing ? std::string("Escape cancels") : hint("Rebind"), kLabelX, kHintY, kDim);
         } else if (page == Page::Updates) {
             cv.draw(page_win, kPx, kPy);

@@ -1,0 +1,190 @@
+name: Build All Platforms
+
+on:
+  push:
+    branches: [main, playtester]
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: "Package version label"
+        required: true
+        default: "2.0.1-pre"
+      android_variant:
+        description: "Android ROM variant"
+        required: true
+        default: "en"
+        type: choice
+        options:
+          - en
+          - jpn
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-all-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-python
+            git
+      - name: Prepare pinned sources & patches
+        run: python3 tools/setup_deps.py
+      - name: Configure & Build Windows x64
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target Mother3Recomp -j
+      - name: Package Windows ZIP
+        run: |
+          VER="${{ inputs.build_version || '2.0.1-pre' }}"
+          python3 tools/package_release.py "$VER" windows-x64 build/Mother3Recomp.exe release-stage --lib-dir /ucrt64/bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-windows-x64
+          path: release-stage/*.zip
+          if-no-files-found: error
+
+  linux-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libsdl2-dev libgl1-mesa-dev python3
+      - name: Prepare pinned sources & patches
+        run: python3 tools/setup_deps.py
+      - name: Configure & Build Linux x86_64
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target Mother3Recomp -j2
+      - name: Package Linux tar.gz
+        run: |
+          VER="${{ inputs.build_version || '2.0.1-pre' }}"
+          python3 tools/package_release.py "$VER" linux-x86_64 build/Mother3Recomp release-stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-linux-x86_64
+          path: release-stage/*.tar.gz
+          if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install macOS dependencies
+        run: brew install cmake ninja
+      - name: Prepare pinned sources & patches
+        run: python3 tools/setup_deps.py
+      - name: Configure & Build macOS Apple Silicon (arm64)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build --target Mother3Recomp -j
+      - name: Package macOS tar.gz
+        run: |
+          VER="${{ inputs.build_version || '2.0.1-pre' }}"
+          python3 tools/package_release.py "$VER" macos-arm64 build/Mother3Recomp release-stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-macos-arm64
+          path: release-stage/*.tar.gz
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install iOS build dependencies
+        run: brew install cmake
+      - name: Prepare pinned sources & patches
+        run: python3 tools/setup_deps.py
+      - name: Configure & Build iOS .app
+        run: |
+          cmake -S . -B build-ios -G Xcode             -DCMAKE_SYSTEM_NAME=iOS             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0             -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build-ios --config Release --target Mother3Recomp --             -sdk iphoneos             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             DEVELOPMENT_TEAM=""
+      - name: Package unsigned .ipa
+        run: |
+          VER="${{ inputs.build_version || '2.0.1-pre' }}"
+          mkdir -p out Payload
+          APP_PATH="$(find build-ios -name "Mother3Recomp.app" -type d | head -n 1)"
+          test -n "$APP_PATH"
+          cp -R "$APP_PATH" Payload/
+          zip -qry "out/Mother3Recomp-v${VER}-ios.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-ios
+          path: out/*.ipa
+          if-no-files-found: error
+
+  android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python & Prepare pinned sources & patches
+        run: python3 tools/setup_deps.py
+      - name: Remove duplicate SDL Gradle wrapper jar
+        run: rm -f gbarecomp/platform/android/third_party/SDL/android-project/gradle/wrapper/gradle-wrapper.jar
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Prepare signing keystore
+        run: |
+          if [ -f android/mother3-dev-keystore.b64 ]; then
+            base64 -d android/mother3-dev-keystore.b64 > android/mother3-dev.p12
+          else
+            keytool -genkeypair -v -keystore android/mother3-dev.p12 -storetype PKCS12               -alias mother3dev -keyalg RSA -keysize 2048 -validity 10000               -storepass mother3dev2026 -keypass mother3dev2026               -dname "CN=Mother3Recomp, OU=Dev, O=Mother3Recomp, L=Unknown, S=Unknown, C=US"
+          fi
+          keytool -list -keystore android/mother3-dev.p12 -storepass mother3dev2026 -alias mother3dev >/dev/null
+      - name: Install Android SDK & NDK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort | tail -n 1)"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+          validate-wrappers: false
+      - name: Build Android ARM64 APK
+        working-directory: android
+        env:
+          MOTHER3_VARIANT: ${{ inputs.android_variant || 'en' }}
+        run: |
+          gradle :app:assembleRelease \
+            -Pmother3Variant="${MOTHER3_VARIANT}" \
+            -PgbaAbis=arm64-v8a \
+            -PgbaNativeJobs=2 \
+            -PgbaKeystore="$GITHUB_WORKSPACE/android/mother3-dev.p12" \
+            -PgbaKeystorePassword=mother3dev2026 \
+            -PgbaKeyAlias=mother3dev \
+            -PgbaKeyPassword=mother3dev2026 \
+            --stacktrace
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          VER="${{ inputs.build_version || '2.0.1-pre' }}"
+          VAR="${{ inputs.android_variant || 'en' }}"
+          cp android/app/build/outputs/apk/release/app-release.apk "out/Mother3Recomp-v${VER}-${VAR}-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-android-arm64
+          path: out/*.apk
+          if-no-files-found: error

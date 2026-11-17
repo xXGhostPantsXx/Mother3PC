@@ -32,6 +32,8 @@ struct Settings {
     bool skip_logos = true;      // auto-skip boot logo splash screens to title
     int black_bars = 2;          // 0 = None, 1 = Less, 2 = Default
     std::array<std::string, kButtonCount> keys;  // SDL scancode names
+    std::array<int, 2> assist_keys = {30, 31};   // SDL scancodes: Rewind (1), Fast-Forward (2)
+    std::array<int, 2> assist_pads = {0, 0};     // encoded pad button/trigger: Rewind, Fast-Forward
 };
 
 Settings defaults();

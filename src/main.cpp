@@ -500,6 +500,7 @@ int mother3_main(int argc, char** argv) {
 
     // PC conveniences: rewind + fast-forward, save states, sharper scaling.
     opts.expose_assist_tools = true;
+    opts.save_state_slot_count = 10;
     opts.assist_tools_enabled_by_default = true;
     opts.assist_fast_forward_multiplier_default = 4;
     opts.rewind_history_seconds = 30;

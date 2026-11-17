@@ -124,6 +124,10 @@ Settings load(const std::string& dir) {
     s.camera_zoom = to_int(cfg, "m3_camera_zoom", 0, 0, 2);
     s.skip_logos = to_int(cfg, "m3_skip_logos", 1, 0, 1) != 0;
     s.black_bars = to_int(cfg, "m3_black_bars", 2, 0, 2);
+    s.assist_keys[0] = to_int(cfg, "assist_rewind_key", 30, 0, 512);
+    s.assist_keys[1] = to_int(cfg, "assist_fast_key", 31, 0, 512);
+    s.assist_pads[0] = to_int(cfg, "assist_rewind_pad", 0, 0, 512);
+    s.assist_pads[1] = to_int(cfg, "assist_fast_pad", 0, 0, 512);
     if (auto it = cfg.find("screen"); it != cfg.end())
         for (const char* name : kScreens)
             if (lower(it->second) == name) s.screen = name;
@@ -152,7 +156,11 @@ void save(const std::string& dir, const Settings& s) {
                    {"m3_live_title", s.live_title ? "1" : "0"},
                    {"m3_camera_zoom", std::to_string(s.camera_zoom)},
                    {"m3_skip_logos", s.skip_logos ? "1" : "0"},
-                   {"m3_black_bars", std::to_string(s.black_bars)}});
+                   {"m3_black_bars", std::to_string(s.black_bars)},
+                   {"assist_rewind_key", std::to_string(s.assist_keys[0])},
+                   {"assist_fast_key", std::to_string(s.assist_keys[1])},
+                   {"assist_rewind_pad", std::to_string(s.assist_pads[0])},
+                   {"assist_fast_pad", std::to_string(s.assist_pads[1])}});
     std::vector<std::pair<std::string, std::string>> keys;
     for (int i = 0; i < kButtonCount; ++i) keys.emplace_back(kButtonKeys[i], s.keys[i]);
     write_section(dir + "/keybinds.ini", "player1", keys);
