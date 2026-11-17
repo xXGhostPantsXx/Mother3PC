@@ -82,26 +82,52 @@ jobs:
           path: release-stage/*.tar.gz
           if-no-files-found: error
 
-  macos-universal:
+  macos-arm64:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Install macOS dependencies
-        run: brew install cmake ninja sdl2
+        run: brew install cmake ninja
       - name: Prepare pinned sources & patches
         run: python3 tools/setup_deps.py
-      - name: Configure & Build macOS Universal
+      - name: Configure & Build macOS Apple Silicon (arm64)
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
           cmake --build build --target Mother3Recomp -j
       - name: Package macOS tar.gz
         run: |
           VER="${{ inputs.build_version || '2.0.1-pre' }}"
-          python3 tools/package_release.py "$VER" macos-universal build/Mother3Recomp release-stage
+          python3 tools/package_release.py "$VER" macos-arm64 build/Mother3Recomp release-stage
       - uses: actions/upload-artifact@v4
         with:
-          name: Mother3Recomp-macos-universal
+          name: Mother3Recomp-macos-arm64
           path: release-stage/*.tar.gz
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install iOS build dependencies
+        run: brew install cmake
+      - name: Prepare pinned sources & patches
+        run: python3 tools/setup_deps.py
+      - name: Configure & Build iOS .app
+        run: |
+          cmake -S . -B build-ios -G Xcode             -DCMAKE_SYSTEM_NAME=iOS             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0             -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build-ios --config Release --target Mother3Recomp --             -sdk iphoneos             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             DEVELOPMENT_TEAM=""
+      - name: Package unsigned .ipa
+        run: |
+          VER="${{ inputs.build_version || '2.0.1-pre' }}"
+          mkdir -p out Payload
+          APP_PATH="$(find build-ios -name "Mother3Recomp.app" -type d | head -n 1)"
+          test -n "$APP_PATH"
+          cp -R "$APP_PATH" Payload/
+          zip -qry "out/Mother3Recomp-v${VER}-ios.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mother3Recomp-ios
+          path: out/*.ipa
           if-no-files-found: error
 
   android-arm64:
