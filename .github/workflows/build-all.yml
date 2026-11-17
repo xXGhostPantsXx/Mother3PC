@@ -43,6 +43,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-SDL2
             mingw-w64-ucrt-x86_64-python
+            git
       - name: Prepare pinned sources & patches
         run: python3 tools/setup_deps.py
       - name: Configure & Build Windows x64
