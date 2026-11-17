@@ -7,7 +7,7 @@ namespace m3updater {
 using StrVec = std::vector<std::string>;
 
 inline constexpr const char* kLauncherVersion = "2.0.0";
-inline constexpr const char* kDefaultBuildVersion = "2026.11.13-rc1";
+inline constexpr const char* kDefaultBuildVersion = "v2.0.1-pre";
 
 struct Config {
     std::string manifest_url;

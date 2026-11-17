@@ -10,12 +10,12 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("version")
-p.add_argument("platform", choices=["windows-x64", "linux-x86_64"])
+p.add_argument("platform", choices=["windows-x64", "linux-x86_64", "macos-universal"])
 p.add_argument("binary", type=Path)
 p.add_argument("output", type=Path)
 p.add_argument("--lib-dir", type=Path)
 a = p.parse_args()
-if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version):
+if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", a.version):
     p.error("Use a numeric release version")
 name = f"Mother3Recomp-v{a.version}-{a.platform}"
 stage = a.output.resolve() / name
