@@ -202,6 +202,9 @@ std::string pad_name(const std::string& src, SDL_GameControllerType type) {
         {"x", "X", "Square", "Y"},         {"y", "Y", "Triangle", "X"},
         {"leftshoulder", "LB", "L1", "L"}, {"rightshoulder", "RB", "R1", "R"},
         {"lefttrigger", "LT", "L2", "ZL"}, {"righttrigger", "RT", "R2", "ZR"},
+        {"lefttrigger+", "LT", "L2", "ZL"}, {"righttrigger+", "RT", "R2", "ZR"},
+        {"triggerleft", "LT", "L2", "ZL"}, {"triggerright", "RT", "R2", "ZR"},
+        {"triggerleft+", "LT", "L2", "ZL"}, {"triggerright+", "RT", "R2", "ZR"},
         {"back", "View", "Share", "-"},    {"start", "Menu", "Options", "+"},
         {"guide", "Xbox", "PS", "Home"},   {"leftstick", "LS", "L3", "LS"},
         {"rightstick", "RS", "R3", "RS"},  {"dpup", "D-Up", "D-Up", "D-Up"},
@@ -240,8 +243,31 @@ struct Pads {
         rui_pad_binds_label(&kGbaPadSpec, path.c_str(), guid.c_str(), b, out, sizeof out);
         return pad_name(out, type);
     }
+    void write_guid_header() const {
+        if (guid.empty() || path.empty()) return;
+        std::vector<std::string> lines;
+        {
+            std::ifstream in(path);
+            std::string line;
+            bool in_ctrl = false;
+            while (std::getline(in, line)) {
+                while (!line.empty() && line.back() == '\r') line.pop_back();
+                const size_t st = line.find_first_not_of(" \t");
+                if (st != std::string::npos && line[st] == '[')
+                    in_ctrl = (line.compare(st, 12, "[controller]") == 0);
+                if (in_ctrl) continue;
+                lines.push_back(line);
+            }
+        }
+        while (!lines.empty() && lines.back().empty()) lines.pop_back();
+        std::ofstream out(path, std::ios::trunc);
+        if (!out) return;
+        out << "[controller]\nguid = " << guid << "\n";
+        for (const auto& l : lines) out << l << "\n";
+    }
     void set(int b, int kind, int code, int dir) {
         rui_pad_binds_set(&kGbaPadSpec, path.c_str(), guid.c_str(), b, kind, code, dir);
+        write_guid_header();
     }
     void reset() { rui_pad_binds_reset(&kGbaPadSpec, path.c_str(), guid.c_str()); }
 #else
@@ -617,7 +643,7 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
                 continue;
             }
 
-            if (capturing) {  // a key rebinds the keyboard, a button the controller; Escape cancels
+            if (capturing) {  // a key rebinds the keyboard, a button/trigger the controller; Escape cancels
                 const int b = row;
                 if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                     if (e.key.keysym.scancode != SDL_SCANCODE_ESCAPE)
@@ -626,9 +652,14 @@ Result run(const m3assets::Rom& rom, m3settings::Settings& st, const std::string
                 } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                     pads.set(b, 1, e.cbutton.button, 0);
                     capturing = false;
-                } else if (e.type == SDL_CONTROLLERAXISMOTION && std::abs(e.caxis.value) > 20000) {
-                    pads.set(b, 2, e.caxis.axis, e.caxis.value < 0 ? -1 : 1);
-                    capturing = false;
+                } else if (e.type == SDL_CONTROLLERAXISMOTION) {
+                    const bool is_trigger = (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ||
+                                             e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+                    const int val = is_trigger ? e.caxis.value : std::abs(e.caxis.value);
+                    if (val > 20000) {
+                        pads.set(b, 2, e.caxis.axis, is_trigger ? 1 : (e.caxis.value < 0 ? -1 : 1));
+                        capturing = false;
+                    }
                 }
                 continue;
             }

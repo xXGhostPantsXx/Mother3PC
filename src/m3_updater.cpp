@@ -180,6 +180,7 @@ Config load_config(const std::string& dir) {
             << "#   download_url=https://.../Mother3Recomp.exe\n"
             << "#   notes=Line 1|Line 2|Line 3\n"
             << "manifest_url=\n"
+            << "channel=stable\n"
             << "build_version=" << kDefaultBuildVersion << "\n";
         return cfg;
     }
@@ -192,6 +193,7 @@ Config load_config(const std::string& dir) {
         const std::string k = trim(line.substr(0, eq));
         const std::string v = trim(line.substr(eq + 1));
         if (k == "manifest_url") cfg.manifest_url = v;
+        else if (k == "channel" && !v.empty()) cfg.channel = v;
         else if (k == "build_version" && !v.empty()) cfg.build_version = v;
     }
     return cfg;
@@ -245,9 +247,13 @@ void begin_check(const std::string& dir) {
                     if (eq == std::string::npos) continue;
                     const std::string k = trim(line.substr(0, eq));
                     const std::string v = trim(line.substr(eq + 1));
-                    if (k == "latest_version") next.latest_version = v;
-                    else if (k == "download_url") next.download_url = v;
-                    else if (k == "notes") raw_notes = v;
+                    const bool beta = (cfg.channel == "beta");
+                    if (!beta && k == "latest_version") next.latest_version = v;
+                    else if (!beta && k == "download_url") next.download_url = v;
+                    else if (!beta && k == "notes") raw_notes = v;
+                    else if (beta && k == "beta_version") next.latest_version = v;
+                    else if (beta && k == "beta_download_url") next.download_url = v;
+                    else if (beta && k == "beta_notes") raw_notes = v;
                 }
                 if (!raw_notes.empty()) {
                     for (char& ch : raw_notes) if (ch == '|') ch = '\n';

@@ -11,6 +11,7 @@ inline constexpr const char* kDefaultBuildVersion = "2026.11.13-rc1";
 
 struct Config {
     std::string manifest_url;
+    std::string channel = "stable";
     std::string build_version = kDefaultBuildVersion;
 };
 
