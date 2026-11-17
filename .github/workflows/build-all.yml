@@ -113,6 +113,10 @@ jobs:
         run: python3 tools/setup_deps.py
       - name: Remove duplicate SDL Gradle wrapper jar
         run: rm -f gbarecomp/platform/android/third_party/SDL/android-project/gradle/wrapper/gradle-wrapper.jar
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - name: Prepare signing keystore
         run: |
           if [ -f android/mother3-dev-keystore.b64 ]; then
@@ -121,10 +125,6 @@ jobs:
             keytool -genkeypair -v -keystore android/mother3-dev.p12 -storetype PKCS12               -alias mother3dev -keyalg RSA -keysize 2048 -validity 10000               -storepass mother3dev2026 -keypass mother3dev2026               -dname "CN=Mother3Recomp, OU=Dev, O=Mother3Recomp, L=Unknown, S=Unknown, C=US"
           fi
           keytool -list -keystore android/mother3-dev.p12 -storepass mother3dev2026 -alias mother3dev >/dev/null
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
       - name: Install Android SDK & NDK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
