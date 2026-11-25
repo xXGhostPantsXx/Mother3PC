@@ -2058,7 +2058,7 @@ index 42208db..10b3158 100644
      bool raised_timer_res_ = false;
      // HP-002: Windows high-resolution waitable timer (HANDLE, void* here to
 diff --git a/src/runtime/host_window.cpp b/src/runtime/host_window.cpp
-index 496d741..8733a3a 100644
+index 496d741..5b8825d 100644
 --- a/src/runtime/host_window.cpp
 +++ b/src/runtime/host_window.cpp
 @@ -23,6 +23,7 @@
@@ -2770,7 +2770,7 @@ index 496d741..8733a3a 100644
              }
          } else if (e.type == SDL_WINDOWEVENT &&
                     e.window.event == SDL_WINDOWEVENT_CLOSE) {
-@@ -3225,25 +3487,70 @@ HostWindow::Events HostWindow::pump() {
+@@ -3225,25 +3487,76 @@ HostWindow::Events HostWindow::pump() {
      // inputs. Keyboard and controller are additive so either can be used at
      // any time, including while testing motion.
      if (b->controller && SDL_GameControllerGetAttached(b->controller)) {
@@ -2792,6 +2792,10 @@ index 496d741..8733a3a 100644
 -        for (const auto& binding : pad_map) {
 -            if (SDL_GameControllerGetButton(b->controller, binding.button))
 -                keys &= static_cast<uint16_t>(~(1u << binding.bit));
++        bool lt_bound = (b->assist_pad[0] == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) ||
++                         b->assist_pad[1] == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true));
++        bool rt_bound = (b->assist_pad[0] == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) ||
++                         b->assist_pad[1] == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true));
 +#if defined(GBARECOMP_RUNTIME_UI)
 +        char guid[40] = {};
 +        SDL_JoystickGetGUIDString(SDL_JoystickGetGUID(
@@ -2818,6 +2822,8 @@ index 496d741..8733a3a 100644
 +                        binding = assist_pad_axis(axis, true);
 +                }
 +            }
++            if (binding == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true)) lt_bound = true;
++            if (binding == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true)) rt_bound = true;
 +            if (assist_pad_down(b->controller, binding))
 +                keys &= static_cast<uint16_t>(~(1u << bits[row]));
 +        }
@@ -2839,11 +2845,11 @@ index 496d741..8733a3a 100644
 +
 +        // Analog Triggers:
 +        // LT (Left Trigger) -> Secondary L shoulder
-+        if (SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000)
++        if (!lt_bound && SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000)
 +            keys &= static_cast<uint16_t>(~(1u << 9));
 +
 +        // RT (Right Trigger) -> Secondary R shoulder AND B (Dash)
-+        if (SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000) {
++        if (!rt_bound && SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000) {
 +            keys &= static_cast<uint16_t>(~(1u << 8));
 +            keys &= static_cast<uint16_t>(~(1u << 1));
          }
@@ -2859,7 +2865,7 @@ index 496d741..8733a3a 100644
      }
      if (b->touch_controls) {
          const uint16_t touch_buttons = active_touch_buttons(b);
-@@ -3369,6 +3676,10 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
+@@ -3369,6 +3682,10 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
  
  void HostWindow::present(const uint8_t* /*rgb888*/) {}
  void HostWindow::present(const uint8_t*, unsigned, unsigned) {}
@@ -2870,7 +2876,7 @@ index 496d741..8733a3a 100644
  
  void HostWindow::load_input_config(const char* /*dir*/,
                                     bool /*assist_tools_default*/,
-@@ -3381,13 +3692,19 @@ int  HostWindow::volume() const { return 100; }
+@@ -3381,13 +3698,19 @@ int  HostWindow::volume() const { return 100; }
  int  HostWindow::window_scale() const { return 1; }
  void HostWindow::set_linear_filter(bool /*enabled*/) {}
  bool HostWindow::linear_filter() const { return false; }
