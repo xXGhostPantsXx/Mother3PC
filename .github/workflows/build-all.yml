@@ -54,10 +54,11 @@ jobs:
           python3 -c 'import base64, os, pathlib, sys; rom=os.environ.get("ROM_B64",""); bios=os.environ.get("BIOS_B64",""); sys.exit("Missing MOTHER3_ROM_B64 or GBA_BIOS_B64 secrets") if (not rom or not bios) else None; pathlib.Path(".ci_tmp_rom.gba").write_bytes(base64.b64decode(rom)); pathlib.Path(".ci_tmp_bios.bin").write_bytes(base64.b64decode(bios))'
           cmake -S . -B build-host-gen -G Ninja -DCMAKE_BUILD_TYPE=Release -DGBAGAME_RECOMP_UI=OFF -DBUILD_TESTING=OFF
           cmake --build build-host-gen --target gba_recompile -j
-          GBA_RECOMPILE="$PWD/build-host-gen/gbarecomp_build/gba_recompile" bash tools/regen.sh .ci_tmp_rom.gba .ci_tmp_bios.bin
+          TOOL="$PWD/build-host-gen/gbarecomp_build/gba_recompile"
+          [ -f "${TOOL}.exe" ] && TOOL="${TOOL}.exe"
+          GBA_RECOMPILE="$TOOL" bash tools/regen.sh .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -f .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -rf build-host-gen
-
       - name: Configure & Build Windows x64
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -77,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libsdl2-dev libgl1-mesa-dev python3
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsdl2-dev libgl1-mesa-dev python3
       - name: Prepare pinned sources & patches
         run: python3 tools/setup_deps.py
       - name: Generate native BIOS and game corpora (from encrypted secrets)
@@ -91,7 +92,6 @@ jobs:
           GBA_RECOMPILE="$PWD/build-host-gen/gbarecomp_build/gba_recompile" bash tools/regen.sh .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -f .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -rf build-host-gen
-
       - name: Configure & Build Linux x86_64
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -107,7 +107,7 @@ jobs:
           if-no-files-found: error
 
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install macOS dependencies
@@ -125,7 +125,6 @@ jobs:
           GBA_RECOMPILE="$PWD/build-host-gen/gbarecomp_build/gba_recompile" bash tools/regen.sh .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -f .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -rf build-host-gen
-
       - name: Configure & Build macOS Apple Silicon (arm64)
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
@@ -141,11 +140,11 @@ jobs:
           if-no-files-found: error
 
   ios:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install iOS build dependencies
-        run: brew install cmake
+        run: brew install cmake ninja
       - name: Prepare pinned sources & patches
         run: python3 tools/setup_deps.py
       - name: Generate native BIOS and game corpora (from encrypted secrets)
@@ -159,11 +158,10 @@ jobs:
           GBA_RECOMPILE="$PWD/build-host-gen/gbarecomp_build/gba_recompile" bash tools/regen.sh .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -f .ci_tmp_rom.gba .ci_tmp_bios.bin
           rm -rf build-host-gen
-
       - name: Configure & Build iOS .app
         run: |
-          cmake -S . -B build-ios -G Xcode             -DCMAKE_SYSTEM_NAME=iOS             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0             -DCMAKE_OSX_ARCHITECTURES=arm64
-          cmake --build build-ios --config Release --target Mother3Recomp --             -sdk iphoneos             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             DEVELOPMENT_TEAM=""
+          cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build-ios --config Release --target Mother3Recomp -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
       - name: Package unsigned .ipa
         run: |
           VER="${{ inputs.build_version || '2.0.1-pre' }}"
@@ -183,8 +181,21 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Install host build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build python3
       - name: Install Python & Prepare pinned sources & patches
         run: python3 tools/setup_deps.py
+      - name: Generate native BIOS and game corpora (from encrypted secrets)
+        env:
+          ROM_B64: ${{ secrets.MOTHER3_ROM_B64 }}
+          BIOS_B64: ${{ secrets.GBA_BIOS_B64 }}
+        run: |
+          python3 -c 'import base64, os, pathlib, sys; rom=os.environ.get("ROM_B64",""); bios=os.environ.get("BIOS_B64",""); sys.exit("Missing MOTHER3_ROM_B64 or GBA_BIOS_B64 secrets") if (not rom or not bios) else None; pathlib.Path(".ci_tmp_rom.gba").write_bytes(base64.b64decode(rom)); pathlib.Path(".ci_tmp_bios.bin").write_bytes(base64.b64decode(bios))'
+          cmake -S . -B build-host-gen -G Ninja -DCMAKE_BUILD_TYPE=Release -DGBAGAME_RECOMP_UI=OFF -DBUILD_TESTING=OFF
+          cmake --build build-host-gen --target gba_recompile -j
+          GBA_RECOMPILE="$PWD/build-host-gen/gbarecomp_build/gba_recompile" bash tools/regen.sh .ci_tmp_rom.gba .ci_tmp_bios.bin
+          rm -f .ci_tmp_rom.gba .ci_tmp_bios.bin
+          rm -rf build-host-gen
       - name: Remove duplicate SDL Gradle wrapper jar
         run: rm -f gbarecomp/platform/android/third_party/SDL/android-project/gradle/wrapper/gradle-wrapper.jar
       - uses: actions/setup-java@v4
@@ -196,7 +207,7 @@ jobs:
           if [ -f android/mother3-dev-keystore.b64 ]; then
             base64 -d android/mother3-dev-keystore.b64 > android/mother3-dev.p12
           else
-            keytool -genkeypair -v -keystore android/mother3-dev.p12 -storetype PKCS12               -alias mother3dev -keyalg RSA -keysize 2048 -validity 10000               -storepass mother3dev2026 -keypass mother3dev2026               -dname "CN=Mother3Recomp, OU=Dev, O=Mother3Recomp, L=Unknown, S=Unknown, C=US"
+            keytool -genkeypair -v -keystore android/mother3-dev.p12 -storetype PKCS12 -alias mother3dev -keyalg RSA -keysize 2048 -validity 10000 -storepass mother3dev2026 -keypass mother3dev2026 -dname "CN=Mother3Recomp, OU=Dev, O=Mother3Recomp, L=Unknown, S=Unknown, C=US"
           fi
           keytool -list -keystore android/mother3-dev.p12 -storepass mother3dev2026 -alias mother3dev >/dev/null
       - name: Install Android SDK & NDK
@@ -216,15 +227,7 @@ jobs:
         env:
           MOTHER3_VARIANT: ${{ inputs.android_variant || 'en' }}
         run: |
-          gradle :app:assembleRelease \
-            -Pmother3Variant="${MOTHER3_VARIANT}" \
-            -PgbaAbis=arm64-v8a \
-            -PgbaNativeJobs=2 \
-            -PgbaKeystore="$GITHUB_WORKSPACE/android/mother3-dev.p12" \
-            -PgbaKeystorePassword=mother3dev2026 \
-            -PgbaKeyAlias=mother3dev \
-            -PgbaKeyPassword=mother3dev2026 \
-            --stacktrace
+          gradle :app:assembleRelease -Pmother3Variant="${MOTHER3_VARIANT}" -PgbaAbis=arm64-v8a -PgbaNativeJobs=2 -PgbaKeystore="$GITHUB_WORKSPACE/android/mother3-dev.p12" -PgbaKeystorePassword=mother3dev2026 -PgbaKeyAlias=mother3dev -PgbaKeyPassword=mother3dev2026 --stacktrace
       - name: Collect APK
         run: |
           mkdir -p out
