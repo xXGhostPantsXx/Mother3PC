@@ -129,10 +129,10 @@ list(FILTER GAME_RECOMPILED_SOURCES INCLUDE REGEX
 if(GAME_RECOMPILED_SOURCES)
     if(MSVC)
         set_source_files_properties(${GAME_RECOMPILED_SOURCES} PROPERTIES
-            COMPILE_OPTIONS "/O1;/EHs-c-;/GR-")
+            COMPILE_OPTIONS "/O2;/EHs-c-;/GR-")
     else()
         set_source_files_properties(${GAME_RECOMPILED_SOURCES} PROPERTIES
-            COMPILE_OPTIONS "-O1;-g0;-fno-exceptions;-fno-rtti;-fno-strict-aliasing;-fno-math-errno")
+            COMPILE_OPTIONS "-O2;-g0;-fno-exceptions;-fno-rtti;-fno-strict-aliasing;-fno-math-errno")
     endif()
 endif()
 
