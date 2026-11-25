@@ -2058,7 +2058,7 @@ index 42208db..10b3158 100644
      bool raised_timer_res_ = false;
      // HP-002: Windows high-resolution waitable timer (HANDLE, void* here to
 diff --git a/src/runtime/host_window.cpp b/src/runtime/host_window.cpp
-index 496d741..5b8825d 100644
+index 496d741..357f067 100644
 --- a/src/runtime/host_window.cpp
 +++ b/src/runtime/host_window.cpp
 @@ -23,6 +23,7 @@
@@ -2108,17 +2108,26 @@ index 496d741..5b8825d 100644
      int           sharp_texture_w = 0;
      int           sharp_texture_h = 0;
      bool          sharp_target_failed = false;
-@@ -376,6 +402,9 @@ struct Backend {
+@@ -366,6 +392,7 @@ struct Backend {
+         bool active = false;
+         bool pad = false;
+         bool toggle = false;
++        bool ff_toggle = false;
+         bool toggle_dragging = false;  // the toggle is being repositioned
+         float start_x = 0.0f, start_y = 0.0f;
+         float grab_dx = 0.0f, grab_dy = 0.0f;  // toggle centre - finger
+@@ -376,6 +403,10 @@ struct Backend {
      // GBARECOMP_TOUCH_CONTROLS) and its player-controlled visibility.
      bool touch_controls = false;
      bool pad_visible = false;
++    bool touch_ff_latched = false;
 +    // The player's saved (or the default) choice. A connected physical
 +    // controller hides the pad whatever it is; it applies without one.
 +    bool pad_wanted = false;
      bool pad_choice_saved = false;
      // Player-placed pad toggle: centre as a fraction of the safe area, so it
      // keeps its place across rotation. Unset = bottom-right corner.
-@@ -388,6 +417,9 @@ struct Backend {
+@@ -388,6 +419,9 @@ struct Backend {
      // Enhanced (MP2K shadow) audio; saved = the player chose it in the menu.
      bool audio_enhanced = false;
      bool audio_enhanced_saved = false;
@@ -2128,7 +2137,7 @@ index 496d741..5b8825d 100644
      bool touch_emulation = false;   // desktop mouse -> touch
      float px_per_mm = 96.0f / 25.4f;
      float logical_px_per_mm = 96.0f / 25.4f;  // SDL-reported (logical) density
-@@ -452,6 +484,7 @@ struct Backend {
+@@ -452,6 +486,7 @@ struct Backend {
      // grading), so default behavior is byte-identical to upstream.
      std::unique_ptr<runtime::ColorLut> color_lut;
      std::vector<uint8_t> graded_fb;  // scratch RGB888 (base_w*base_h*3)
@@ -2136,7 +2145,7 @@ index 496d741..5b8825d 100644
  #if defined(GBARECOMP_RUNTIME_UI)
      RecompRuntimeUi* runtime_ui = nullptr;
      ImGuiContext* runtime_imgui_context = nullptr;
-@@ -466,6 +499,8 @@ struct Backend {
+@@ -466,6 +501,8 @@ struct Backend {
      int base_h = 160;   // logical surface height (160; vertical expansion deferred)
      bool expanded_view = false;  // native games retain the historical SDL path
      bool resize_driven_view = false;
@@ -2145,7 +2154,7 @@ index 496d741..5b8825d 100644
      bool freely_resizable_window = false;
      bool linear_filter = false;
      bool sharp_filter = false;
-@@ -473,14 +508,15 @@ struct Backend {
+@@ -473,14 +510,15 @@ struct Backend {
      // ---- rebindable input (see HostWindow::load_input_config) --------------
      // GBA KEYINPUT bit (0..9) per bound SDL scancode; seeded from the
      // built-in defaults, overridden by keybinds.ini [player1].
@@ -2163,7 +2172,7 @@ index 496d741..5b8825d 100644
      };
      bool         assist_tools = true;
      int          assist_fast_forward_multiplier = 4;
-@@ -557,6 +593,41 @@ bool ensure_sharp_texture(Backend* b, int factor) {
+@@ -557,6 +595,41 @@ bool ensure_sharp_texture(Backend* b, int factor) {
      return true;
  }
  
@@ -2205,7 +2214,7 @@ index 496d741..5b8825d 100644
  void close_game_controller(Backend* b) {
      if (!b || !b->controller) return;
  #if SDL_VERSION_ATLEAST(2, 0, 14)
-@@ -575,6 +646,11 @@ bool open_game_controller(Backend* b, int device_index) {
+@@ -575,6 +648,11 @@ bool open_game_controller(Backend* b, int device_index) {
          !SDL_IsGameController(device_index))
          return false;
  
@@ -2217,7 +2226,49 @@ index 496d741..5b8825d 100644
      SDL_GameController* controller = SDL_GameControllerOpen(device_index);
      if (!controller) return false;
      b->controller = controller;
-@@ -1141,6 +1217,7 @@ void save_touch_config(const Backend* b) {
+@@ -640,6 +718,7 @@ struct PadLayout {
+     PadCircle a, b;
+     PadRect l, r, select, start;
+     PadRect toggle;
++    PadRect ff_toggle;
+ };
+ 
+ PadLayout compute_pad_layout(const Backend* b) {
+@@ -734,6 +813,11 @@ PadLayout compute_pad_layout(const Backend* b) {
+     cx = std::clamp(cx, left + tw * 0.5f, std::max(left + tw * 0.5f, right - tw * 0.5f));
+     cy = std::clamp(cy, top + th * 0.5f, std::max(top + th * 0.5f, bottom - th * 0.5f));
+     p.toggle = {cx - tw * 0.5f, cy - th * 0.5f, tw, th};
++    p.ff_toggle = p.toggle;
++    if (p.toggle.x > (left + right) * 0.5f)
++        p.ff_toggle.x = p.toggle.x - p.toggle.w - 2.0f * mm;
++    else
++        p.ff_toggle.x = p.toggle.x + p.toggle.w + 2.0f * mm;
+     return p;
+ }
+ 
+@@ -1101,6 +1185,21 @@ void draw_pad_toggle(Backend* b, HostOverlay& ov) {
+     ov.fill_rect(cx - s * 1.2f, cy - s * 0.4f, s * 2.4f, s * 0.8f, 0, {230, 238, 248, 190}, S);
+     ov.fill_circle(r.x + r.w * 0.68f, cy - s * 0.5f, s * 0.55f, {230, 238, 248, 190}, S);
+     ov.fill_circle(r.x + r.w * 0.80f, cy + s * 0.5f, s * 0.55f, {230, 238, 248, 190}, S);
++    if (b->assist_tools) {
++        const PadRect& fr = p.ff_toggle;
++        bool ff_held = false;
++        for (const auto& t : b->touches) ff_held = ff_held || (t.active && t.ff_toggle);
++        const OverlayColor fbg = ff_held ? OverlayColor{80, 210, 255, 170}
++                               : b->touch_ff_latched ? OverlayColor{255, 214, 74, 210}
++                                                     : OverlayColor{20, 26, 38, 110};
++        ov.fill_rect(fr.x, fr.y, fr.w, fr.h, fr.h * 0.3f, fbg, S);
++        ov.stroke_rect(fr.x, fr.y, fr.w, fr.h, fr.h * 0.3f, 1.5f, {230, 238, 248, 150}, S);
++        if (ov.text_supported()) {
++            const float tsz = fr.h * 0.48f;
++            ov.text(fr.x + fr.w * 0.5f, fr.y + (fr.h - tsz) * 0.5f, tsz,
++                    {245, 248, 255, 235}, "FF>>", OverlayAlign::Center, S);
++        }
++    }
+ }
+ 
+ // Progress ring for the engine-owned long press (opens runtime settings)
+@@ -1141,6 +1240,7 @@ void save_touch_config(const Backend* b) {
              const bool header = s != std::string::npos && line[s] == '[';
              if (header)
                  in_section = line.compare(s, 7, "[Touch]") == 0 ||
@@ -2225,7 +2276,7 @@ index 496d741..5b8825d 100644
                               line.compare(s, 7, "[Audio]") == 0;
              if (in_section) continue;
              kept.push_back(line);
-@@ -1153,11 +1230,15 @@ void save_touch_config(const Backend* b) {
+@@ -1153,11 +1253,15 @@ void save_touch_config(const Backend* b) {
      if (!kept.empty()) f << "\n";
      f << "[Touch]\n";
      if (b->pad_choice_saved)
@@ -2242,7 +2293,7 @@ index 496d741..5b8825d 100644
      if (b->audio_enhanced_saved) {
          f << "\n[Audio]\n";
          f << "enhanced = " << (b->audio_enhanced ? 1 : 0) << "\n";
-@@ -1314,6 +1395,17 @@ runtime::ColorSettings resolve_color_settings(const char* toml_screen) {
+@@ -1314,6 +1418,17 @@ runtime::ColorSettings resolve_color_settings(const char* toml_screen) {
      return s;
  }
  
@@ -2260,7 +2311,7 @@ index 496d741..5b8825d 100644
  // SDL audio pull callback: render exactly `len` bytes of device-rate mono S16
  // from the bridge ring. The bridge emits faded silence (not raw zeros) before
  // prime / on underrun, so a momentarily-starved producer no longer clicks.
-@@ -1448,11 +1540,28 @@ PresentationLayout current_presentation_layout(Backend* b, int* out_w, int* out_
+@@ -1448,11 +1563,28 @@ PresentationLayout current_presentation_layout(Backend* b, int* out_w, int* out_
          SDL_GetWindowSize(b->window, &drawable_w, &drawable_h);
      }
      PresentationLayout layout{};
@@ -2290,7 +2341,7 @@ index 496d741..5b8825d 100644
      } else {
          // Pad-only titles: reserve roughly one fifth of the display on each
          // side for the controls. Prefer an exact integer multiple so pixel art
-@@ -1572,8 +1681,22 @@ void open_runtime_menu_from_touch(Backend* b) {
+@@ -1572,8 +1704,22 @@ void open_runtime_menu_from_touch(Backend* b) {
  
  #if defined(GBARECOMP_RUNTIME_UI)
  
@@ -2314,7 +2365,7 @@ index 496d741..5b8825d 100644
      if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE &&
          !recomp_runtime_ui_is_open(ui)) {
          recomp_runtime_ui_open(ui);
-@@ -1705,11 +1828,13 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
+@@ -1705,11 +1851,13 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
      b->title = title ? title : "gbarecomp";
  #if defined(__ANDROID__)
      b->touch_controls = true;
@@ -2329,7 +2380,7 @@ index 496d741..5b8825d 100644
      // Desktop validation of inset-aware layouts: GBARECOMP_SAFE_INSETS=l,t,r,b
      // (drawable pixels). Android supplies real cutout insets separately.
      if (const char* insets = std::getenv("GBARECOMP_SAFE_INSETS")) {
-@@ -1750,7 +1875,6 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
+@@ -1750,7 +1898,6 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
                                     : "LandscapeLeft LandscapeRight";
      SDL_SetHint(SDL_HINT_ORIENTATIONS, orientation_hint);
      if (orientation_policy_ == 2) window_flags |= SDL_WINDOW_RESIZABLE;
@@ -2337,7 +2388,7 @@ index 496d741..5b8825d 100644
  #endif
      b->window = SDL_CreateWindow(title ? title : "gbarecomp",
                                   SDL_WINDOWPOS_CENTERED,
-@@ -1764,7 +1888,10 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
+@@ -1764,7 +1911,10 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
          return false;
      }
  #if defined(__ANDROID__)
@@ -2349,7 +2400,7 @@ index 496d741..5b8825d 100644
  #endif
      {
          // Physical density for touch targets and gesture thresholds.
-@@ -1909,7 +2036,8 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
+@@ -1909,7 +2059,8 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
      want.freq     = 65536;
      want.format   = AUDIO_S16SYS;
      want.channels = 1;
@@ -2359,7 +2410,7 @@ index 496d741..5b8825d 100644
      const char* direct_audio_env = std::getenv("GBARECOMP_AUDIO_DIRECT");
      b->audio_direct =
          direct_audio_env && *direct_audio_env && *direct_audio_env != '0';
-@@ -1957,10 +2085,20 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
+@@ -1957,10 +2108,20 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
              cfg.channels    = 1;
              cfg.source_rate = 65536.0;                 // engine's standardized GBA mixer rate
              cfg.host_rate   = static_cast<double>(got.freq);
@@ -2383,7 +2434,7 @@ index 496d741..5b8825d 100644
              SDL_PauseAudioDevice(b->audio_dev, 0);      // start the callback
          }
      }
-@@ -2282,6 +2420,7 @@ void HostWindow::close() {
+@@ -2282,6 +2443,7 @@ void HostWindow::close() {
      runtime_imgui_shutdown(b);
  #endif
      destroy_sharp_texture(b);
@@ -2391,7 +2442,7 @@ index 496d741..5b8825d 100644
      if (b->texture)   SDL_DestroyTexture(b->texture);
      if (b->renderer)  SDL_DestroyRenderer(b->renderer);
      if (b->window)    SDL_DestroyWindow(b->window);
-@@ -2320,6 +2459,7 @@ bool HostWindow::set_surface_size(int base_w, int base_h) {
+@@ -2320,6 +2482,7 @@ bool HostWindow::set_surface_size(int base_w, int base_h) {
  #endif
      SDL_DestroyTexture(b->texture);
      destroy_sharp_texture(b);
@@ -2399,7 +2450,7 @@ index 496d741..5b8825d 100644
      b->texture = replacement;
      b->presentation_source_w = b->presentation_source_h = 0;
      b->base_w = base_w;
-@@ -2372,6 +2512,49 @@ bool HostWindow::drawable_size(int* width, int* height) const {
+@@ -2372,6 +2535,49 @@ bool HostWindow::drawable_size(int* width, int* height) const {
  
  void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
  
@@ -2449,7 +2500,7 @@ index 496d741..5b8825d 100644
  void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
      if (!open_ || !impl_ || !rgb888) return;
      auto* b = static_cast<Backend*>(impl_);
-@@ -2389,26 +2572,38 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
+@@ -2389,26 +2595,38 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
          };
          while ((info.max_texture_width > 0 && upload_w > unsigned(info.max_texture_width)) ||
                 (info.max_texture_height > 0 && upload_h > unsigned(info.max_texture_height))) shrink();
@@ -2503,7 +2554,7 @@ index 496d741..5b8825d 100644
      }
      // Large elective scales can exceed an older GPU's texture limit. Keep the
      // complete CPU raster and reduce only the upload, preserving logical view
-@@ -2507,43 +2702,12 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
+@@ -2507,43 +2725,12 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
      }
      if (touch_input_enabled(b)) publish_touch_presentation(b);
  #if defined(__ANDROID__)
@@ -2549,7 +2600,7 @@ index 496d741..5b8825d 100644
      }
  #endif
      render_host_layers(b);
-@@ -2585,6 +2749,17 @@ void HostWindow::load_input_config(const char* dir,
+@@ -2585,6 +2772,17 @@ void HostWindow::load_input_config(const char* dir,
          fast_forward_multiplier_default, 2, 10);
      const std::string base = std::string(dir) + "/";
  
@@ -2567,7 +2618,7 @@ index 496d741..5b8825d 100644
      // keybinds.ini [player1] (recomp-ui generic format, scancode names).
      ini_scan_section((base + "keybinds.ini").c_str(), "player1",
                       [b](const char* key, const char* val) {
-@@ -2643,9 +2818,8 @@ void HostWindow::set_fullscreen(int mode) {
+@@ -2643,9 +2841,8 @@ void HostWindow::set_fullscreen(int mode) {
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
  #if defined(__ANDROID__)
@@ -2579,7 +2630,7 @@ index 496d741..5b8825d 100644
      return;
  #endif
      if (mode < 0) mode = 0;
-@@ -2687,7 +2861,9 @@ void HostWindow::adjust_scale(int delta) {
+@@ -2687,7 +2884,9 @@ void HostWindow::adjust_scale(int delta) {
      SDL_SetWindowPosition(b->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
  }
  
@@ -2589,7 +2640,7 @@ index 496d741..5b8825d 100644
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
      if (pct < 0) pct = 0;
-@@ -2716,6 +2892,9 @@ void HostWindow::set_linear_filter(bool enabled) {
+@@ -2716,6 +2915,9 @@ void HostWindow::set_linear_filter(bool enabled) {
  #if SDL_VERSION_ATLEAST(2, 0, 12)
      SDL_SetTextureScaleMode(b->texture,
          enabled ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
@@ -2599,7 +2650,7 @@ index 496d741..5b8825d 100644
  #endif
  }
  
-@@ -2735,6 +2914,19 @@ bool HostWindow::audio_enabled() const {
+@@ -2735,6 +2937,19 @@ bool HostWindow::audio_enabled() const {
      return b->audio_dev && SDL_GetAudioDeviceStatus(b->audio_dev) == SDL_AUDIO_PLAYING;
  }
  
@@ -2619,7 +2670,7 @@ index 496d741..5b8825d 100644
  void HostWindow::set_resize_driven_view(bool enabled) {
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
-@@ -2755,6 +2947,41 @@ void HostWindow::set_runtime_ui(RecompRuntimeUi* ui) {
+@@ -2755,6 +2970,41 @@ void HostWindow::set_runtime_ui(RecompRuntimeUi* ui) {
      if (!open_ || !impl_) return;
      static_cast<Backend*>(impl_)->runtime_ui = ui;
  }
@@ -2661,7 +2712,7 @@ index 496d741..5b8825d 100644
  #endif
  
  void HostWindow::configure_touch(bool policy, std::uint32_t claims,
-@@ -2777,13 +3004,16 @@ void HostWindow::configure_touch(bool policy, std::uint32_t claims,
+@@ -2777,13 +3027,16 @@ void HostWindow::configure_touch(bool policy, std::uint32_t claims,
      if (!b->pad_choice_saved) {
          const bool platform_default =
  #if defined(__ANDROID__)
@@ -2680,7 +2731,7 @@ index 496d741..5b8825d 100644
      TouchHub& hub = TouchHub::instance();
      hub.set_claims(policy ? claims : 0);
      // A game that owns long-press gets a snappier threshold; the engine's own
-@@ -2809,7 +3039,8 @@ void HostWindow::set_touch_config_dir(const char* dir) {
+@@ -2809,7 +3062,8 @@ void HostWindow::set_touch_config_dir(const char* dir) {
      ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Touch",
                       [b](const char* key, const char* val) {
          if (SDL_strcasecmp(key, "pad_visible") == 0) {
@@ -2690,7 +2741,7 @@ index 496d741..5b8825d 100644
              b->pad_choice_saved = true;
          } else if (SDL_strcasecmp(key, "toggle_x") == 0) {
              b->toggle_fx = std::clamp(static_cast<float>(std::atof(val)), 0.0f, 1.0f);
-@@ -2819,6 +3050,13 @@ void HostWindow::set_touch_config_dir(const char* dir) {
+@@ -2819,6 +3073,13 @@ void HostWindow::set_touch_config_dir(const char* dir) {
              b->toggle_pos_saved = true;
          }
      });
@@ -2704,7 +2755,7 @@ index 496d741..5b8825d 100644
      ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Audio",
                       [b](const char* key, const char* val) {
          if (SDL_strcasecmp(key, "enhanced") == 0) {
-@@ -2828,6 +3066,22 @@ void HostWindow::set_touch_config_dir(const char* dir) {
+@@ -2828,6 +3089,22 @@ void HostWindow::set_touch_config_dir(const char* dir) {
      });
  }
  
@@ -2727,7 +2778,22 @@ index 496d741..5b8825d 100644
  bool HostWindow::saved_audio_enhanced(bool& enabled) const {
      if (!open_ || !impl_) return false;
      auto* b = static_cast<const Backend*>(impl_);
-@@ -2853,9 +3107,12 @@ void HostWindow::set_touch_pad_visible(bool visible) {
+@@ -2844,6 +3121,14 @@ void HostWindow::save_audio_enhanced(bool enabled) {
+     save_touch_config(b);
+ }
+ 
++bool HostWindow::touch_fast_forward_latched() const {
++    if (!open_ || !impl_) return false;
++    return static_cast<const Backend*>(impl_)->touch_ff_latched;
++}
++void HostWindow::set_touch_fast_forward_latched(bool latched) {
++    if (!open_ || !impl_) return;
++    static_cast<Backend*>(impl_)->touch_ff_latched = latched;
++}
+ bool HostWindow::touch_pad_visible() const {
+     if (!open_ || !impl_) return false;
+     return static_cast<const Backend*>(impl_)->pad_visible;
+@@ -2853,9 +3138,12 @@ void HostWindow::set_touch_pad_visible(bool visible) {
      if (!open_ || !impl_) return;
      auto* b = static_cast<Backend*>(impl_);
      visible = visible && b->touch_controls;
@@ -2742,7 +2808,7 @@ index 496d741..5b8825d 100644
      // Any finger currently on a pad button is released with the pad.
      for (auto& t : b->touches)
          if (t.active && t.pad) t.buttons = 0;
-@@ -3011,7 +3268,7 @@ HostWindow::Events HostWindow::pump() {
+@@ -3011,7 +3299,7 @@ HostWindow::Events HostWindow::pump() {
              ImGui::SetCurrentContext(b->runtime_imgui_context);
              ImGui_ImplSDL2_ProcessEvent(&e);
          }
@@ -2751,7 +2817,7 @@ index 496d741..5b8825d 100644
  #endif
          if (e.type == SDL_QUIT) {
              ev.quit = true;
-@@ -3025,12 +3282,17 @@ HostWindow::Events HostWindow::pump() {
+@@ -3025,12 +3313,17 @@ HostWindow::Events HostWindow::pump() {
              ev.terminating = true;
              ev.quit = true;
          } else if (e.type == SDL_CONTROLLERDEVICEADDED) {
@@ -2770,7 +2836,33 @@ index 496d741..5b8825d 100644
              }
          } else if (e.type == SDL_WINDOWEVENT &&
                     e.window.event == SDL_WINDOWEVENT_CLOSE) {
-@@ -3225,25 +3487,76 @@ HostWindow::Events HostWindow::pump() {
+@@ -3077,7 +3370,10 @@ HostWindow::Events HostWindow::pump() {
+                             ? pad_buttons_at(pad, px, py, b->px_per_mm) : 0;
+                     // The toggle wins over the pad so it can never be buried
+                     // under a button (it is small and player-movable).
+-                    if (pad_toggle_available(b) &&
++                    if (pad_toggle_available(b) && b->assist_tools &&
++                        pad.ff_toggle.contains(px, py, 2.0f * b->px_per_mm)) {
++                        touch->ff_toggle = true;
++                    } else if (pad_toggle_available(b) &&
+                         pad.toggle.contains(px, py, 2.0f * b->px_per_mm)) {
+                         touch->toggle = true;
+                         touch->grab_dx = pad.toggle.x + pad.toggle.w * 0.5f - px;
+@@ -3093,7 +3389,12 @@ HostWindow::Events HostWindow::pump() {
+             } else if (auto* touch = find_touch(b, e.tfinger.fingerId)) {
+                 touch->x = px;
+                 touch->y = py;
+-                if (touch->pad) {
++                if (touch->ff_toggle) {
++                    if (e.type == SDL_FINGERUP &&
++                        pad.ff_toggle.contains(px, py, 2.5f * b->px_per_mm)) {
++                        b->touch_ff_latched = !b->touch_ff_latched;
++                    }
++                } else if (touch->pad) {
+                     // Sliding between pad buttons follows the finger.
+                     touch->buttons = pad_buttons_at(pad, px, py, b->px_per_mm);
+                 } else if (touch->routed) {
+@@ -3225,25 +3526,76 @@ HostWindow::Events HostWindow::pump() {
      // inputs. Keyboard and controller are additive so either can be used at
      // any time, including while testing motion.
      if (b->controller && SDL_GameControllerGetAttached(b->controller)) {
@@ -2826,7 +2918,7 @@ index 496d741..5b8825d 100644
 +            if (binding == assist_pad_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true)) rt_bound = true;
 +            if (assist_pad_down(b->controller, binding))
 +                keys &= static_cast<uint16_t>(~(1u << bits[row]));
-+        }
+         }
 +#else
 +        constexpr int buttons[] = {0, 1, 4, 6, 14, 13, 11, 12, 10, 9};
 +        for (int bit = 0; bit < 10; ++bit)
@@ -2852,7 +2944,7 @@ index 496d741..5b8825d 100644
 +        if (!rt_bound && SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000) {
 +            keys &= static_cast<uint16_t>(~(1u << 8));
 +            keys &= static_cast<uint16_t>(~(1u << 1));
-         }
++        }
 +
 +        // Left Analog Thumbstick -> D-Pad movement
 +        const int16_t stick_x = SDL_GameControllerGetAxis(b->controller, SDL_CONTROLLER_AXIS_LEFTX);
@@ -2865,7 +2957,7 @@ index 496d741..5b8825d 100644
      }
      if (b->touch_controls) {
          const uint16_t touch_buttons = active_touch_buttons(b);
-@@ -3369,6 +3682,10 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
+@@ -3369,6 +3721,10 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
  
  void HostWindow::present(const uint8_t* /*rgb888*/) {}
  void HostWindow::present(const uint8_t*, unsigned, unsigned) {}
@@ -2876,7 +2968,7 @@ index 496d741..5b8825d 100644
  
  void HostWindow::load_input_config(const char* /*dir*/,
                                     bool /*assist_tools_default*/,
-@@ -3381,13 +3698,19 @@ int  HostWindow::volume() const { return 100; }
+@@ -3381,17 +3737,25 @@ int  HostWindow::volume() const { return 100; }
  int  HostWindow::window_scale() const { return 1; }
  void HostWindow::set_linear_filter(bool /*enabled*/) {}
  bool HostWindow::linear_filter() const { return false; }
@@ -2896,8 +2988,14 @@ index 496d741..5b8825d 100644
  #endif
  void HostWindow::configure_touch(bool /*policy*/, std::uint32_t /*claims*/,
                                   int /*pad_default*/, bool /*emulate_touch*/) {}
+ void HostWindow::set_touch_config_dir(const char* /*dir*/) {}
++bool HostWindow::touch_fast_forward_latched() const { return false; }
++void HostWindow::set_touch_fast_forward_latched(bool) {}
+ bool HostWindow::touch_pad_visible() const { return false; }
+ void HostWindow::set_touch_pad_visible(bool /*visible*/) {}
+ void HostWindow::set_view_margins(std::uint32_t, std::uint32_t, std::uint32_t,
 diff --git a/src/runtime/host_window.h b/src/runtime/host_window.h
-index 073ef16..b84109e 100644
+index 073ef16..4fc19ea 100644
 --- a/src/runtime/host_window.h
 +++ b/src/runtime/host_window.h
 @@ -23,6 +23,7 @@
@@ -2934,7 +3032,16 @@ index 073ef16..b84109e 100644
  #endif
      // ---- touch (touch_input.h) ---------------------------------------------
      // `policy` = the game consumes touch through RunOptions::input_frame;
-@@ -159,6 +172,15 @@ public:
+@@ -125,6 +138,8 @@ public:
+     void set_touch_config_dir(const char* dir);
+     bool touch_pad_visible() const;
+     void set_touch_pad_visible(bool visible);
++    bool touch_fast_forward_latched() const;
++    void set_touch_fast_forward_latched(bool latched);
+     // Logical view margins inside the surface (for touch/overlay mapping).
+     void set_view_margins(std::uint32_t left, std::uint32_t right,
+                           std::uint32_t top, std::uint32_t bottom);
+@@ -159,6 +174,15 @@ public:
      // The enhanced texture is uploaded and presented directly, without a
      // native-resolution intermediate render target.
      void present(const uint8_t* rgb888, unsigned width, unsigned height);
@@ -3270,10 +3377,10 @@ index 5bb495d..ffd9117 100644
  // POSIX mirror of the Win32 path above: dlopen/dlsym for
  // LoadLibrary/GetProcAddress. Until this existed, every heal off Windows failed
 diff --git a/src/runtime/runtime.cpp b/src/runtime/runtime.cpp
-index 1eb5011..93c6ec2 100644
+index 1eb5011..2160f02 100644
 --- a/src/runtime/runtime.cpp
 +++ b/src/runtime/runtime.cpp
-@@ -1,5141 +1,5234 @@
+@@ -1,5141 +1,5235 @@
 -// runtime.cpp - shared BIOS+ROM runner for generated game binaries.
 -//
 -// This translation unit is itself interpreter-free: it initializes the
@@ -12409,7 +12516,8 @@ index 1eb5011..93c6ec2 100644
 +            win.fast_forward_multiplier(), 2, 10);
 +#endif
 +        fast_forward_active = assist_tools_enabled() &&
-+                              (ev.fast_forward || fast_forward_latched);
++                              (ev.fast_forward || fast_forward_latched ||
++                               win.touch_fast_forward_latched());
 +        // System hotkeys (config.ini [KeyMap], rebindable in the launcher).
 +        if (ev.toggle_fullscreen) {
 +            // Toggle between windowed and the configured mode. A session
