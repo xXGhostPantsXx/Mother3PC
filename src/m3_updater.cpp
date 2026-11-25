@@ -1,4 +1,5 @@
 #include "m3_updater.h"
+#include "m3_discord_auth.h"
 
 #include <atomic>
 #include <cstdio>
@@ -179,7 +180,7 @@ Config load_config(const std::string& dir) {
             << "#   latest_version=2.0.1\n"
             << "#   download_url=https://.../Mother3Recomp.exe\n"
             << "#   notes=Line 1|Line 2|Line 3\n"
-            << "manifest_url=\n"
+            << "manifest_url=https://raw.githubusercontent.com/xXGhostPantsXx/Mother3PC/playtester/manifest.ini\n"
             << "channel=stable\n"
             << "build_version=" << kDefaultBuildVersion << "\n";
         return cfg;
@@ -223,12 +224,14 @@ StrVec load_local_notes(const std::string& dir) {
 void begin_check(const std::string& dir) {
     if (g_busy.exchange(true)) return;
     Config cfg = load_config(dir);
+    const m3discord::Session dsession = m3discord::load_session(dir);
+    const bool is_beta = (cfg.channel == "beta") || (dsession.signed_in && dsession.is_playtester);
     {
         MutexLock lk(g_mtx);
         g_shared.checking = true;
-        g_shared.status = "Checking for updates...";
+        g_shared.status = is_beta ? "Checking playtester updates..." : "Checking for updates...";
     }
-    std::thread worker([dir, cfg]() {
+    std::thread worker([dir, cfg, is_beta]() {
         State next;
         next.patch_notes = load_local_notes(dir);
         if (cfg.manifest_url.empty()) {
@@ -247,7 +250,7 @@ void begin_check(const std::string& dir) {
                     if (eq == std::string::npos) continue;
                     const std::string k = trim(line.substr(0, eq));
                     const std::string v = trim(line.substr(eq + 1));
-                    const bool beta = (cfg.channel == "beta");
+                    const bool beta = is_beta;
                     if (!beta && k == "latest_version") next.latest_version = v;
                     else if (!beta && k == "download_url") next.download_url = v;
                     else if (!beta && k == "notes") raw_notes = v;
@@ -261,9 +264,9 @@ void begin_check(const std::string& dir) {
                 }
 if (!next.latest_version.empty() && is_newer_version(next.latest_version, kLauncherVersion)) {
 next.update_available = true;
-next.status = "Update available: v" + next.latest_version;
+next.status = (is_beta ? "Playtest update available: v" : "Update available: v") + next.latest_version;
 } else {
-next.status = "Up to date (v" + std::string(kLauncherVersion) + ")";
+next.status = (is_beta ? "Playtest up to date (v" : "Up to date (v") + std::string(kLauncherVersion) + ")";
 }
 }
 #else

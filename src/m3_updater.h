@@ -10,7 +10,7 @@ inline constexpr const char* kLauncherVersion = "2.0.0";
 inline constexpr const char* kDefaultBuildVersion = "v2.0.1-pre";
 
 struct Config {
-    std::string manifest_url;
+    std::string manifest_url = "https://raw.githubusercontent.com/xXGhostPantsXx/Mother3PC/playtester/manifest.ini";
     std::string channel = "stable";
     std::string build_version = kDefaultBuildVersion;
 };
