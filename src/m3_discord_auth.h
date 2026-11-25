@@ -4,9 +4,9 @@
 namespace m3discord {
 
 struct Config {
-    std::string client_id;
-    std::string guild_id;
-    std::string playtester_role_id;
+    std::string client_id = "1570322072373170177";
+    std::string guild_id = "1570576347481251940";
+    std::string playtester_role_id = "1570577186069422122";
     std::string redirect_uri = "http://127.0.0.1:48912/callback";
     bool require_playtester = false;
 };
