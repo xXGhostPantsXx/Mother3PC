@@ -7,6 +7,10 @@ YOU HAVE to provide your own gba.bin and rom! (seems like the best way to do it 
 
 If you download the APK, it says that the BIOS (gba.bin) file is optional. IT IS NOT! You still have to get that file! I will go in and fix that later.
 
+IF YOUR GAME CRASHES WHEN TRYING TO LOAD:
+You are having a problem with a SHA-1 mismatch. This just means its a version mismatch because the port looks for a very specific version. Please locate your own Japan rom, and patch it with the translator here:
+https://mother3.fobby.net
+
 ## Download
 
 | Platform | Version | Download |
