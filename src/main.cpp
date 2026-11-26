@@ -536,9 +536,9 @@ int mother3_main(int argc, char** argv) {
     opts.touch_pad_default = 1;
     // A pixel font (SIL OFL) for the runtime menu, read from the APK's assets.
     opts.runtime_ui_font = "payload/fonts/pixelify_sans.ttf";
-    // shortcut: rewind/fast-forward stay desktop-only until rewind memory is measured on phones.
-    opts.expose_assist_tools = false;
-    opts.assist_tools_enabled_by_default = false;
+    // Enable touch fast-forward and runtime assist controls on mobile.
+    opts.expose_assist_tools = true;
+    opts.assist_tools_enabled_by_default = true;
 #if defined(MOTHER3_RETROACHIEVEMENTS)
     // No-op unless the setup screen stored RetroAchievements credentials.
     mother3::ra_install(opts, MOTHER3_ROM_FILE);
@@ -623,6 +623,10 @@ Java_org_gbarecomp_GbaNative_applyRomPatch(JNIEnv* env, jclass, jbyteArray sourc
 
 #if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
 extern "C" int SDL_main(int argc, char** argv) {
+#if defined(__ANDROID__)
+    // Pin the recompiled game thread to big performance cores on all Android phones.
+    setenv("GBARECOMP_BIG_CORES", "1", 0);
+#endif
 #if defined(MOTHER3_TUNE_RG556)
     // Anbernic RG556 preset (build option MOTHER3_TUNE_RG556). Its Unisoc T820
     // grants OpenSL ES the low-latency path, so the Java AudioTrack fallback
