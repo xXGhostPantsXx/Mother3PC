@@ -106,7 +106,7 @@ jobs:
           path: release-stage/*.tar.gz
           if-no-files-found: error
 
-  macos-arm64:
+  macos-universal:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -132,10 +132,10 @@ jobs:
       - name: Package macOS tar.gz
         run: |
           VER="${{ inputs.build_version || '2.0.1-pre' }}"
-          python3 tools/package_release.py "$VER" macos-arm64 build/Mother3Recomp release-stage
+          python3 tools/package_release.py "$VER" macos-universal build/Mother3Recomp release-stage
       - uses: actions/upload-artifact@v4
         with:
-          name: Mother3Recomp-macos-arm64
+          name: Mother3Recomp-macos-universal
           path: release-stage/*.tar.gz
           if-no-files-found: error
 
