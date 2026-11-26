@@ -13928,10 +13928,10 @@ index 3b5843e..35cb13a 100644
      test_bios_undocumented_io_write();
      test_bios_window_writes_are_ignored();
 diff --git a/tools/gba_recompile/main.cpp b/tools/gba_recompile/main.cpp
-index e5c9d48..292f802 100644
+index e5c9d48..c410675 100644
 --- a/tools/gba_recompile/main.cpp
 +++ b/tools/gba_recompile/main.cpp
-@@ -1,1603 +1,1612 @@
+@@ -1,1603 +1,1610 @@
 -// gba_recompile — read a GBA ROM or BIOS image, discover functions
 -// reachable from the entry point + seeded symbols, lower their
 -// ARM/THUMB bodies through the armv4t IR into C++ source, and write
@@ -16304,15 +16304,13 @@ index e5c9d48..292f802 100644
 +    for (const DataSymbol* s : sorted) {
 +        std::string clean_name;
 +        clean_name.reserve(s->name.size());
-+        for (char ch : s->name) {
-+            if (ch == '' || ch == '
-+') continue;
-+            if (ch == '\' || ch == '"') clean_name.push_back('\');
-+            clean_name.push_back(ch);
++        for (unsigned char ch : s->name) {
++            if (ch == 13 || ch == 10) continue;
++            if (ch == 92 || ch == 34) clean_name.push_back(92);
++            clean_name.push_back(static_cast<char>(ch));
 +        }
-+        std::fprintf(f, "    {0x%08Xu, 0x%Xu, \"%s\"},
-+",
-+                     s->addr, s->size, clean_name.c_str());
++        std::fprintf(f, "    {0x%08Xu, 0x%Xu, %c%s%c},%c",
++                     s->addr, s->size, 34, clean_name.c_str(), 34, 10);
 +    }
 +    std::fprintf(f,
 +        "};\n"
