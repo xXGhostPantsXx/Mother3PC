@@ -396,12 +396,12 @@ std::ifstream in(path);
 if (!in.is_open()) {
 std::ofstream out(path);
 out << "# Discord OAuth2 PKCE + Playtester Role Configuration\n"
-<< "# Add 127.0.0 to your Discord App's OAuth2 Redirects.\n"
-<< "client_id=\n"
-<< "guild_id=\n"
-<< "playtester_role_id=\n"
-<< "redirect_uri=http://127.0.0\n"
-<< "require_playtester=0\n";
+    << "# Add http://127.0.0.1:48912/callback to your Discord App's OAuth2 Redirects.\n"
+    << "client_id=1570322072373170177\n"
+    << "guild_id=1570576347481251940\n"
+    << "playtester_role_id=1570577186069422122\n"
+    << "redirect_uri=http://127.0.0.1:48912/callback\n"
+    << "require_playtester=0\n";
 return cfg;
 }
 std::string line;
