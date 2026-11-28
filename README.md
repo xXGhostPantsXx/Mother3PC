@@ -21,7 +21,8 @@ https://mother3.fobby.net
 | MacOS | 2.0.1 | [Mac file](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.1/Mother3Recomp-macos-universal.zip) |
 | IOS (15 or higher) | 2.0.1 | [IOS IPA](https://github.com/xXGhostPantsXx/Mother3PC/releases/download/v2.0.1/Mother3Recomp-ios.zip) |
 
-**v2.0.1:** View patch notes in launcher or releases page. 
+**v2.0.1:** View patch notes in launcher or releases page.
+
 **v2.0.0:** Fixed the issues regarding audio and refresh rate. Added new options to the launcher for the ability to detect and automatically update your game! More patch notes are added within the launcher itself.
 
 ## Features
